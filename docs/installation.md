@@ -94,6 +94,6 @@ If kirox can't find your credentials:
 2. Make sure you're logged in: `kiro-cli login`
 3. Or set environment variables:
    ```bash
-   export KURO_TOKEN="your-token"
-   export KURO_PROFILE_ARN="your-profile-arn"
+   export KIROX_TOKEN="your-token"
+   export KIROX_PROFILE_ARN="your-profile-arn"
    ```

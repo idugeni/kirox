@@ -57,14 +57,14 @@ class AuthManager:
             "No credentials found. Please:\n"
             "  1. Install kiro-cli: pip install kiro-cli\n"
             "  2. Login: kiro-cli login\n"
-            "  3. Or set env: export KURO_TOKEN=your-token"
+            "  3. Or set env: export KIROX_TOKEN=your-token"
         )
 
     @classmethod
     def from_env(cls) -> AuthManager:
         """Load from environment variables."""
         token = (
-            os.environ.get("KURO_TOKEN") or
+            os.environ.get("KIROX_TOKEN") or
             os.environ.get("ASSISTANT_TOKEN") or
             os.environ.get("OPENAI_API_KEY")  # Some tools use this
         )
@@ -72,7 +72,7 @@ class AuthManager:
             raise AuthenticationError("No token in environment")
         
         profile_arn = (
-            os.environ.get("KURO_PROFILE_ARN") or
+            os.environ.get("KIROX_PROFILE_ARN") or
             os.environ.get("ASSISTANT_PROFILE_ARN")
         )
         return cls(token=token, profile_arn=profile_arn)

@@ -2,7 +2,7 @@
 
 ## Configuration File
 
-Kirox uses a JSON configuration file located at `~/.kuro/config.json`.
+Kirox uses a JSON configuration file located at `~/.kirox/config.json`.
 
 ### Default Configuration
 
@@ -37,9 +37,9 @@ Kirox uses a JSON configuration file located at `~/.kuro/config.json`.
 
 | Variable | Description |
 |----------|-------------|
-| `KURO_TOKEN` | Bearer token |
-| `KURO_PROFILE_ARN` | AWS profile ARN |
-| `KURO_REGION` | AWS region |
+| `KIROX_TOKEN` | Bearer token |
+| `KIROX_PROFILE_ARN` | AWS profile ARN |
+| `KIROX_REGION` | AWS region |
 
 ## Programmatic Configuration
 
@@ -57,7 +57,7 @@ config = Config(
 )
 
 # Save to file
-config.to_file(Path("~/.kuro/config.json"))
+config.to_file(Path("~/.kirox/config.json"))
 ```
 
 ## Server Configuration
@@ -100,7 +100,7 @@ Set `auto_refresh: false` to disable automatic refresh.
 ```json
 {
   "log_level": "DEBUG",
-  "log_file": "~/.kuro/kirox.log"
+  "log_file": "~/.kirox/kirox.log"
 }
 ```
 

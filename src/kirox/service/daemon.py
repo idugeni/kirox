@@ -14,7 +14,7 @@ from kirox.utils.config import Config, load_config
 logger = logging.getLogger(__name__)
 
 
-class KuroService:
+class KiroxService:
     def __init__(self, config: Optional[Config] = None):
         self._config = config or load_config()
         self._client: Optional[AssistantClient] = None
@@ -64,4 +64,4 @@ class KuroService:
 def main():
     from kirox.utils.logging import setup_logging
     setup_logging()
-    KuroService().run()
+    KiroxService().run()

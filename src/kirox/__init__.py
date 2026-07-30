@@ -4,7 +4,7 @@ from kirox._version import __version__
 from kirox.core.client import AssistantClient
 from kirox.core.eventstream import parse_eventstream
 from kirox.core.models import ModelInfo, StreamEvent, ToolSpec
-from kirox.core.errors import KuroError, APIError, AuthenticationError
+from kirox.core.errors import KiroxError, APIError, AuthenticationError
 
 __version__ = __version__
 __all__ = [
@@ -13,7 +13,7 @@ __all__ = [
     "ModelInfo",
     "StreamEvent",
     "ToolSpec",
-    "KuroError",
+    "KiroxError",
     "APIError",
     "AuthenticationError",
 ]

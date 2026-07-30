@@ -40,9 +40,9 @@ class Config:
 
 def load_config(config_path: Optional[Path] = None) -> Config:
     if config_path is None:
-        config_path = Path.home() / ".kuro" / "config.json"
+        config_path = Path.home() / ".kirox" / "config.json"
     config = Config.from_file(config_path)
-    if os.environ.get("KURO_TOKEN"): config.token = os.environ["KURO_TOKEN"]
-    if os.environ.get("KURO_PROFILE_ARN"): config.profile_arn = os.environ["KURO_PROFILE_ARN"]
-    if os.environ.get("KURO_REGION"): config.region = os.environ["KURO_REGION"]
+    if os.environ.get("KIROX_TOKEN"): config.token = os.environ["KIROX_TOKEN"]
+    if os.environ.get("KIROX_PROFILE_ARN"): config.profile_arn = os.environ["KIROX_PROFILE_ARN"]
+    if os.environ.get("KIROX_REGION"): config.region = os.environ["KIROX_REGION"]
     return config

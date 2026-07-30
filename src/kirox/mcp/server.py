@@ -19,7 +19,7 @@ def create_server():
     def get_client():
         nonlocal client
         if client is None:
-            token = os.environ.get("KURO_TOKEN")
+            token = os.environ.get("KIROX_TOKEN")
             if token:
                 from kirox.core.auth import AuthManager
                 client = AssistantClient(auth=AuthManager(token=token))

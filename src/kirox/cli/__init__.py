@@ -11,7 +11,7 @@ from kirox._version import __version__
 
 
 UPDATE_CHECK_INTERVAL = 3600
-UPDATE_CACHE_FILE = Path.home() / ".kuro" / ".update_cache"
+UPDATE_CACHE_FILE = Path.home() / ".kirox" / ".update_cache"
 
 
 def _get_latest_version() -> str | None:
@@ -67,8 +67,8 @@ def cmd_run(args):
     config = load_config()
     if not args.no_update:
         threading.Thread(target=_check_update, daemon=True).start()
-    from kirox.service.daemon import KuroService
-    service = KuroService(config)
+    from kirox.service.daemon import KiroxService
+    service = KiroxService(config)
     service.start()
     print(f"Kirox v{__version__} running on {config.server_host}:{config.server_port}")
     print("Press Ctrl+C to stop\n")

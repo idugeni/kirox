@@ -17,5 +17,5 @@ def test_config_from_file():
 
 
 def test_load_config_env(monkeypatch):
-    monkeypatch.setenv("KURO_TOKEN", "tok")
+    monkeypatch.setenv("KIROX_TOKEN", "tok")
     assert load_config(Path("/nonexistent")).token == "tok"

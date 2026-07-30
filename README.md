@@ -159,7 +159,7 @@ print(client.chat_simple("What is 2+2?"))
 }
 ```
 
-Location: `~/.kuro/config.json`
+Location: `~/.kirox/config.json`
 
 ---
 

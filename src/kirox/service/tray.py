@@ -33,8 +33,8 @@ class KiroTray:
         if not HAS_PYSTRAY:
             logger.error("pystray not installed. Run: pip install kirox[service]")
             return
-        from kirox.service.daemon import KuroService
-        self._service = KuroService(self._config)
+        from kirox.service.daemon import KiroxService
+        self._service = KiroxService(self._config)
         menu = pystray.Menu(
             pystray.MenuItem("Status: " + self._status, None, enabled=False),
             pystray.MenuItem("Start", lambda: self._service.start()),
