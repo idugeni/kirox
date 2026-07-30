@@ -148,7 +148,7 @@ def cmd_update(args):
 
 def cmd_models(args):
     from kirox.core.client import AssistantClient
-    client = AssistantClient.from_cli_db()
+    client = AssistantClient.auto()
     try:
         models = client.list_models()
         print(f"{'Model ID':<25} {'Name':<20} {'Rate':>6} {'Thinking':>8}")
@@ -162,7 +162,7 @@ def cmd_models(args):
 
 def cmd_chat(args):
     from kirox.core.client import AssistantClient
-    client = AssistantClient.from_cli_db()
+    client = AssistantClient.auto()
     try:
         print(f"Kirox Chat (model: {args.model})\nType 'quit' to exit.\n")
         while True:
@@ -181,7 +181,7 @@ def cmd_chat(args):
 
 def cmd_ask(args):
     from kirox.core.client import AssistantClient
-    client = AssistantClient.from_cli_db()
+    client = AssistantClient.auto()
     try:
         msg = args.message or sys.stdin.read()
         print(client.chat_simple(msg, model_id=args.model))

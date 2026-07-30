@@ -21,6 +21,11 @@ class AssistantClient:
         self._http: Optional[httpx.Client] = None
 
     @classmethod
+    def auto(cls, region: str = "us-east-1") -> AssistantClient:
+        """Auto-detect credentials from all sources."""
+        return cls(auth=AuthManager.auto_detect(), region=region)
+
+    @classmethod
     def from_cli_db(cls, db_path: Optional[str] = None, region: str = "us-east-1") -> AssistantClient:
         return cls(auth=AuthManager.from_cli_db(db_path), region=region)
 
@@ -30,7 +35,7 @@ class AssistantClient:
 
     @property
     def auth(self) -> AuthManager:
-        if self._auth is None: self._auth = AuthManager.from_env()
+        if self._auth is None: self._auth = AuthManager.auto_detect()
         return self._auth
 
     @property
