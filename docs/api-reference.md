@@ -1,231 +1,188 @@
 # API Reference
 
-## REST Endpoints
-
-When running the background service, kirox exposes a local HTTP API.
-
-### Health Check
+## Base URL
 
 ```
-GET /health
+http://localhost:8420
 ```
 
-**Response:**
-```json
-{
-  "status": "ok",
-  "version": "1.0.0"
-}
-```
+## Endpoints
+
+### OpenAI Compatible
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/models` | GET | List available models |
+| `/v1/chat/completions` | POST | Chat completion |
+
+### Anthropic Compatible
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/messages` | POST | Messages API |
+
+### Kirox Native
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/` | GET | Service info |
+| `/api/models` | GET | List models |
+| `/api/chat` | POST | Chat |
+| `/api/token/status` | GET | Token status |
+
+---
+
+## OpenAI Compatible API
 
 ### List Models
 
 ```
-GET /models
+GET /v1/models
 ```
 
-**Response:**
+Response:
 ```json
 {
-  "models": [
+  "object": "list",
+  "data": [
     {
       "id": "auto",
-      "name": "Auto",
-      "rate": 1.0,
-      "thinking": false
-    },
-    {
-      "id": "claude-opus-5",
-      "name": "Claude Opus 5",
-      "rate": 2.2,
-      "thinking": true
+      "object": "model",
+      "created": 1234567890,
+      "owned_by": "kirox"
     }
   ]
 }
 ```
 
-### Chat
+### Chat Completions
 
 ```
-POST /chat
-Content-Type: application/json
+POST /v1/chat/completions
 ```
 
-**Request:**
+Request:
 ```json
 {
-  "message": "Hello, what can you do?",
-  "model": "auto"
+  "model": "auto",
+  "messages": [
+    {"role": "user", "content": "Hello!"}
+  ],
+  "stream": false
 }
 ```
 
-**Response:**
+Response:
 ```json
 {
-  "response": "I can help you with coding tasks..."
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1234567890,
+  "model": "auto",
+  "choices": [
+    {
+      "index": 0,
+      "message": {"role": "assistant", "content": "Hi there!"},
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 }
 ```
 
-### Token Status
+---
+
+## Anthropic Compatible API
+
+### Messages
 
 ```
-GET /token/status
+POST /v1/messages
 ```
 
-**Response:**
+Request:
 ```json
 {
-  "authenticated": true,
-  "has_profile": true
+  "model": "auto",
+  "max_tokens": 1024,
+  "messages": [
+    {"role": "user", "content": "Hello!"}
+  ],
+  "stream": false
 }
+```
+
+Response:
+```json
+{
+  "id": "msg_abc123",
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "Hi there!"}],
+  "model": "auto",
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 0, "output_tokens": 0}
+}
+```
+
+---
+
+## Streaming
+
+Both OpenAI and Anthropic endpoints support streaming.
+
+### OpenAI Stream Format
+
+```
+data: {"choices": [{"delta": {"content": "Hello"}}]}
+
+data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+data: [DONE]
+```
+
+### Anthropic Stream Format
+
+```
+event: message_start
+data: {"type": "message_start", "message": {...}}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 0}
+
+event: message_delta
+data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+
+event: message_stop
+data: {"type": "message_stop"}
 ```
 
 ---
 
 ## Python API
 
-### AssistantClient
-
-The main client for interacting with AI coding assistants.
-
 ```python
 from kirox import AssistantClient
 
-# Auto-detect credentials
 client = AssistantClient.from_cli_db()
 
-# Or with explicit auth
-from kirox.core.auth import AuthManager
-auth = AuthManager(token="Bearer ...", profile_arn="arn:...")
-client = AssistantClient(auth=auth)
-```
-
-#### Methods
-
-##### `list_models()`
-
-Fetch available models.
-
-```python
+# List models
 models = client.list_models()
-for m in models:
-    print(f"{m.model_id}: {m.model_name}")
-```
 
-##### `chat(message, model_id="auto")`
+# Chat
+response = client.chat_simple("Hello!")
 
-Send a chat message with streaming response.
-
-```python
+# Streaming
 for event in client.chat("Hello"):
     if event.content:
         print(event.content, end="")
-```
-
-##### `chat_simple(message, model_id="auto")`
-
-Send a chat message and return the full response.
-
-```python
-response = client.chat_simple("What is 2+2?")
-print(response)
-```
-
-##### `list_tools()`
-
-Fetch available tools.
-
-```python
-tools = client.list_tools()
-for t in tools:
-    print(f"{t.name}: {t.description}")
-```
-
----
-
-### AuthManager
-
-Manages authentication tokens.
-
-```python
-from kirox.core.auth import AuthManager
-
-# From environment
-auth = AuthManager.from_env()
-
-# From CLI database
-auth = AuthManager.from_cli_db()
-
-# Direct token
-auth = AuthManager(token="Bearer ...", profile_arn="arn:...")
-```
-
----
-
-### EventStream Parser
-
-Parse Amazon EventStream binary protocol.
-
-```python
-from kirox import parse_eventstream
-
-for message in parse_eventstream(binary_data):
-    print(f"Event: {message.event_type}")
-    print(f"Body: {message.body_json()}")
-```
-
----
-
-### Configuration
-
-```python
-from kirox.utils.config import Config, load_config
-
-# Load config
-config = load_config()
-
-# Create config
-config = Config(region="us-east-1", server_port=8420)
-```
-
----
-
-## Data Models
-
-### ModelInfo
-
-```python
-@dataclass
-class ModelInfo:
-    model_id: str
-    model_name: str
-    description: str
-    rate_multiplier: float
-    rate_unit: str
-    token_limits: TokenLimits
-    supports_thinking: bool
-```
-
-### ToolSpec
-
-```python
-@dataclass
-class ToolSpec:
-    name: str
-    description: str
-    parameters: tuple[ToolParam, ...]
-```
-
-### StreamEvent
-
-```python
-@dataclass
-class StreamEvent:
-    event_type: str
-    content: str | None
-    model_id: str | None
-    done: bool
-    raw: dict | None
 ```
 
 ---
@@ -233,19 +190,12 @@ class StreamEvent:
 ## Error Handling
 
 ```python
-from kirox.core.errors import (
-    KuroError,          # Base exception
-    AuthenticationError, # Auth failures
-    APIError,           # API request failures
-    StreamError,        # Stream parsing failures
-)
+from kirox.core.errors import AuthenticationError, APIError
 
 try:
-    client.chat("Hello")
+    client.chat_simple("Hello")
 except AuthenticationError:
     print("Not authenticated")
 except APIError as e:
     print(f"API error: {e.status}")
-except StreamError:
-    print("Failed to parse response")
 ```

@@ -4,16 +4,15 @@
 
 ### Production-Ready SDK for AI Coding Assistants
 
-[![PyPI version](https://badge.fury.io/py/kirox.svg)](https://pypi.org/project/kirox/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-33%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-31%20passing-brightgreen.svg)](#testing)
 
 ---
 
 **One command to access Claude, GPT, Deepseek, and more.**
 
-Background service • System tray • Auto-refresh tokens • REST API • MCP Server
+Background service • System tray • OpenAI & Anthropic compatible API • MCP Server
 
 </div>
 
@@ -29,30 +28,13 @@ pip install kirox
 kirox
 ```
 
-That's it. Kirox handles everything automatically.
-
 ---
 
 ## 📦 Installation
 
-### From PyPI (Recommended)
-
 ```bash
-pip install kirox
-```
-
-### With Background Service
-
-```bash
-pip install kirox[service]
-```
-
-### From Source
-
-```bash
-git clone https://github.com/idugeni/kirox.git
-cd kirox
-pip install -e ".[dev,service]"
+pip install kirox           # Basic
+pip install kirox[service]  # With tray icon
 ```
 
 ---
@@ -69,185 +51,130 @@ pip install -e ".[dev,service]"
 | `kirox chat` | Interactive chat |
 | `kirox ask "Hello"` | One-shot question |
 
-### Options
+---
+
+## 🌉 API Bridge
+
+Kirox runs as a **local API bridge** that exposes OpenAI & Anthropic compatible endpoints.
+
+### Base URL
+
+```
+http://localhost:8420
+```
+
+### OpenAI Compatible
 
 ```bash
-kirox --no-tray       # Run without tray icon
-kirox --no-update     # Skip update check
-kirox -v              # Verbose output
-kirox chat -m gpt-5.6-sol  # Use specific model
+# List models
+curl http://localhost:8420/v1/models
+
+# Chat completion
+curl http://localhost:8420/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Streaming
+curl http://localhost:8420/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
 ```
+
+### Anthropic Compatible
+
+```bash
+# Messages API
+curl http://localhost:8420/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Streaming
+curl http://localhost:8420/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "auto",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+### Use with CLI Tools
+
+```bash
+# OpenAI CLI
+export OPENAI_API_KEY=any
+export OPENAI_BASE_URL=http://localhost:8420/v1
+openai api chat.completions.create -m auto -g user -k "Hello!"
+
+# curl one-liner
+curl -s http://localhost:8420/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hi"}]}' | jq
+```
+
+### Use with IDEs
+
+Configure your IDE to use `http://localhost:8420/v1` as the API endpoint.
 
 ---
 
 ## 🐍 Python API
 
-### Basic Usage
-
 ```python
 from kirox import AssistantClient
 
-# Auto-detect credentials from kiro-cli
 client = AssistantClient.from_cli_db()
 
-# Streaming chat
-for event in client.chat("Explain quantum computing"):
+# Streaming
+for event in client.chat("Hello"):
     if event.content:
         print(event.content, end="")
 
 # One-shot
-response = client.chat_simple("What is 2+2?")
-print(response)
-```
-
-### Available Models
-
-```python
-client = AssistantClient.from_cli_db()
-
-for model in client.list_models():
-    print(f"{model.model_id}: {model.model_name} ({model.rate_multiplier}x)")
-```
-
-### Custom Auth
-
-```python
-from kirox import AssistantClient
-from kirox.core.auth import AuthManager
-
-auth = AuthManager(token="Bearer ...", profile_arn="arn:...")
-client = AssistantClient(auth=auth)
+print(client.chat_simple("What is 2+2?"))
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-### Config File
-
-Location: `~/.kuro/config.json`
-
 ```json
 {
   "region": "us-east-1",
   "server_port": 8420,
-  "server_host": "127.0.0.1",
   "auto_refresh": true,
-  "refresh_interval": 3000,
-  "log_level": "INFO"
+  "refresh_interval": 3000
 }
 ```
 
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `KURO_TOKEN` | Bearer token |
-| `KURO_PROFILE_ARN` | AWS profile ARN |
-| `KURO_REGION` | AWS region |
-
----
-
-## 🔌 REST API
-
-When running, kirox exposes a local HTTP API:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/models` | GET | List available models |
-| `/chat` | POST | Send chat message |
-| `/token/status` | GET | Check token status |
-
-### Example
-
-```bash
-# Health check
-curl http://localhost:8420/health
-
-# List models
-curl http://localhost:8420/models
-
-# Chat
-curl -X POST http://localhost:8420/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello!", "model": "auto"}'
-```
-
----
-
-## 🤖 MCP Server
-
-Connect kirox with AI assistants like Claude Code or MiMo:
-
-```json
-{
-  "mcpServers": {
-    "kirox": {
-      "command": "kirox-mcp",
-      "env": {
-        "KURO_TOKEN": "Bearer ..."
-      }
-    }
-  }
-}
-```
+Location: `~/.kuro/config.json`
 
 ---
 
 ## 🧪 Testing
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=kirox
-
-# Run specific test suite
-pytest tests/unit/
-pytest tests/integration/
-pytest tests/e2e/
-pytest tests/performance/
+pytest tests/ -v
 ```
 
 ### Test Coverage
 
 - **Unit Tests**: Config, logging, eventstream parser
-- **Integration Tests**: HTTP server, token scheduler
+- **Integration Tests**: HTTP server (OpenAI + Anthropic endpoints)
 - **E2E Tests**: Mock server, full API flow
 - **Performance Tests**: Parser speed, concurrent operations
-
----
-
-## 🏗️ Architecture
-
-```
-kirox/
-├── src/kirox/
-│   ├── core/           # API client, auth, eventstream parser
-│   ├── cli/            # Command-line interface
-│   ├── mcp/            # MCP server for AI assistants
-│   ├── service/        # Background service, tray, scheduler
-│   └── utils/          # Configuration, logging
-├── tests/
-│   ├── unit/           # Unit tests
-│   ├── integration/    # Integration tests
-│   ├── e2e/            # End-to-end tests
-│   └── performance/    # Performance benchmarks
-└── docs/               # Documentation
-```
-
----
-
-## 🔄 Auto-Update
-
-Kirox automatically checks for updates when started. To update manually:
-
-```bash
-kirox update          # Interactive update
-kirox update -y       # Update without confirmation
-```
 
 ---
 
@@ -261,22 +188,14 @@ kirox update -y       # Update without confirmation
 
 ---
 
-## 🤝 Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
----
-
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE)
 
 ---
 
 <div align="center">
 
 **Made with ❤️ by the Kirox Community**
-
-[Report Bug](https://github.com/idugeni/kirox/issues) • [Request Feature](https://github.com/idugeni/kirox/issues) • [Documentation](https://github.com/idugeni/kirox#readme)
 
 </div>
