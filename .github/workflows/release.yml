@@ -26,13 +26,27 @@ jobs:
           cache: pip
 
       - name: Verify the tag matches the packaged version
+        shell: bash
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          version="$(python -c "import sys; sys.path.insert(0, 'src'); from kirox._version import __version__; print(__version__)")"
-          if [ "$tag" != "$version" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match src/kirox/_version.py (${version})" >&2
-            exit 1
-          fi
+          python - <<'PY'
+          import importlib.util
+          import os
+          import sys
+
+          # Load _version.py on its own. Importing kirox._version would execute
+          # kirox/__init__.py, which needs runtime dependencies that are not
+          # installed yet at this point in the job.
+          spec = importlib.util.spec_from_file_location("_kirox_version", "src/kirox/_version.py")
+          assert spec is not None and spec.loader is not None
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          ref = os.environ["GITHUB_REF_NAME"]
+          tag = ref.removeprefix("v")
+          if tag != module.__version__:
+              sys.exit(f"tag {ref} does not match src/kirox/_version.py ({module.__version__})")
+          print(f"tag {ref} matches packaged version {module.__version__}")
+          PY
 
       - name: Build wheel and source distribution
         run: |
