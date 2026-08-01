@@ -88,7 +88,31 @@ jobs:
         run: python -m pip check
 
       - name: Headless tray import smoke test
-        run: python -c "import kirox.service.tray as tray; from kirox.service.daemon import KiroxService; import pystray, PIL; print('tray module imported, pystray available:', tray.HAS_PYSTRAY); assert tray.KiroTray is not None; assert KiroxService is not None"
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import os
+          import sys
+
+          import kirox.service.tray as tray
+          from kirox.service.daemon import KiroxService
+
+          # Prove the optional dependencies are installed without importing
+          # pystray, which probes a display backend at import time.
+          for name in ("pystray", "PIL"):
+              assert importlib.util.find_spec(name) is not None, f"{name} is not installed"
+
+          assert tray.KiroTray is not None
+          assert KiroxService is not None
+
+          if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+              assert tray.HAS_PYSTRAY is False, "tray must degrade without a display"
+              assert tray.create_icon_image() is None
+              assert tray.KiroTray().start() is False, "start() must refuse headless"
+
+          print("tray import ok, HAS_PYSTRAY =", tray.HAS_PYSTRAY)
+          PY
 
       - name: Console script smoke test
         run: kirox --help

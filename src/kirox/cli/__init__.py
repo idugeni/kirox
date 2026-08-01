@@ -100,14 +100,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             _wait_for_interrupt(service)
             return
 
-        try:
-            from kirox.service.tray import KiroTray
+        from kirox.service.tray import TRAY_UNAVAILABLE_MESSAGE, KiroTray
 
-            tray_available = KiroTray(config, service=service).start()
-        except ImportError:
-            tray_available = False
-        if not tray_available:
-            print("pystray not installed. Run: pip install kirox[service]")
+        if not KiroTray(config, service=service).start():
+            print(TRAY_UNAVAILABLE_MESSAGE)
             _wait_for_interrupt(service)
     finally:
         service.stop()

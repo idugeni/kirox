@@ -37,6 +37,7 @@ All notable changes to Kirox are documented in this file. The format follows [Ke
 - CLI stop no longer targets a PID until persisted state and service ownership have been validated, and force stop now additionally proves process identity so a reused PID is never signalled.
 - `ModelInfo.from_api()` no longer stores `None` in fields declared `str`, `int`, or `float` when upstream sends an explicit null, and no longer raises `AttributeError` for a null `tokenLimits`; an unusable `modelId` now raises `ValueError` instead of producing a mistyped model.
 - `AssistantClient.list_models()` now validates the response envelope and reports malformed payloads as `APIError` rather than letting `KeyError` or `ValueError` escape the SDK.
+- Importing `kirox.service.tray` no longer crashes on a host with no usable display. `pystray` probes a display backend while importing, so a headless Linux server raised `Xlib.error.DisplayNameError`, which the previous `except ImportError` guard did not catch. The tray now degrades to unavailable and reports a message that names the missing display as a possible cause.
 
 ## [1.0.0] - 2026-07-30
 

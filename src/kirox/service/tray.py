@@ -18,8 +18,19 @@ try:
     from PIL import Image, ImageDraw
 
     HAS_PYSTRAY = True
-except ImportError:
+except Exception:
+    # pystray selects and probes a display backend while importing, so a host
+    # with no usable display raises backend errors instead of ImportError --
+    # for example Xlib.error.DisplayNameError on a headless Linux server.
+    # Any import-time failure means the same thing here: no tray is available.
+    logger.debug("Tray dependencies unavailable", exc_info=True)
     HAS_PYSTRAY = False
+
+
+TRAY_UNAVAILABLE_MESSAGE = (
+    "System tray unavailable. Install the extra with: pip install kirox[service], "
+    "or run with --no-tray if this host has no usable display."
+)
 
 
 def create_icon_image(color: str = "green") -> Any:
@@ -72,7 +83,7 @@ class KiroTray:
     def start(self) -> bool:
         """Run the tray without replacing an injected service."""
         if not HAS_PYSTRAY:
-            logger.error("pystray not installed. Run: pip install kirox[service]")
+            logger.error(TRAY_UNAVAILABLE_MESSAGE)
             return False
 
         service = self._get_service()
