@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/kirox
+    permissions:
+      # Required for PyPI trusted publishing. No API token is used.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Verify the tag matches the packaged version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python -c "import sys; sys.path.insert(0, 'src'); from kirox._version import __version__; print(__version__)")"
+          if [ "$tag" != "$version" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match src/kirox/_version.py (${version})" >&2
+            exit 1
+          fi
+
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build==1.5.0
+          python -m build
+
+      - name: Inspect wheel and run clean-install smoke test
+        run: python scripts/verify_distribution.py
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2

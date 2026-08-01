@@ -1,8 +1,6 @@
 """E2E tests."""
 
-import json
-import struct
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 
 
 def create_mock_app():
@@ -16,9 +14,32 @@ def create_mock_app():
     def handle():
         target = request.headers.get("x-amz-target", "")
         if "ListAvailableModels" in target:
-            return jsonify({"models": [{"modelId": "test", "modelName": "Test", "rateMultiplier": 1.0, "tokenLimits": {"maxInputTokens": 100000, "maxOutputTokens": 64000}}]})
+            return jsonify(
+                {
+                    "models": [
+                        {
+                            "modelId": "test",
+                            "modelName": "Test",
+                            "rateMultiplier": 1.0,
+                            "tokenLimits": {"maxInputTokens": 100000, "maxOutputTokens": 64000},
+                        }
+                    ]
+                }
+            )
         if "InvokeMCP" in target:
-            return jsonify({"result": {"tools": [{"name": "t", "description": "d", "inputSchema": {"json": {"type": "object", "properties": {}}}}]}})
+            return jsonify(
+                {
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "t",
+                                "description": "d",
+                                "inputSchema": {"json": {"type": "object", "properties": {}}},
+                            }
+                        ]
+                    }
+                }
+            )
         return jsonify({"error": "unknown"}), 400
 
     return app
@@ -31,7 +52,11 @@ def test_mock_health():
 
 def test_mock_models():
     with create_mock_app().test_client() as c:
-        r = c.post("/", headers={"x-amz-target": "KiroControlPlaneBearerService.ListAvailableModels"}, json={})
+        r = c.post(
+            "/",
+            headers={"x-amz-target": "KiroControlPlaneBearerService.ListAvailableModels"},
+            json={},
+        )
         assert len(r.get_json()["models"]) == 1
 
 

@@ -1,41 +1,47 @@
 """Performance tests."""
 
-import time
+import concurrent.futures
 import struct
+import time
+import zlib
+
 from kirox.core.eventstream import parse_eventstream
 
 
-def test_parse_performance():
+def create_message() -> bytes:
     body = b'{"content": "test"}'
-    headers = bytearray()
     name = b"event-type"
-    headers.append(len(name)); headers.extend(name); headers.append(7)
-    headers.extend(struct.pack(">H", 4)); headers.extend(b"test")
-    msg = struct.pack(">I", 12 + len(headers) + len(body) + 4)
-    msg += struct.pack(">I", len(headers)) + struct.pack(">I", 0) + bytes(headers) + body + struct.pack(">I", 0)
+    headers = bytes([len(name)]) + name + b"\x07" + struct.pack(">H", 4) + b"test"
+    total_length = 16 + len(headers) + len(body)
+    prelude = struct.pack(">II", total_length, len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF)
+    message = prelude + headers + body
+    return message + struct.pack(">I", zlib.crc32(message) & 0xFFFFFFFF)
+
+
+def test_parse_performance() -> None:
+    message = create_message()
 
     start = time.time()
     for _ in range(1000):
-        list(parse_eventstream(msg))
+        list(parse_eventstream(message))
     elapsed = time.time() - start
+
     assert elapsed < 1.0, f"Too slow: {elapsed:.3f}s"
 
 
-def test_concurrent_parse():
-    import concurrent.futures
-    body = b'{"content": "test"}'
-    headers = bytearray()
-    name = b"event-type"
-    headers.append(len(name)); headers.extend(name); headers.append(7)
-    headers.extend(struct.pack(">H", 4)); headers.extend(b"test")
-    msg = struct.pack(">I", 12 + len(headers) + len(body) + 4)
-    msg += struct.pack(">I", len(headers)) + struct.pack(">I", 0) + bytes(headers) + body + struct.pack(">I", 0)
+def test_concurrent_parse() -> None:
+    message = create_message()
 
-    def parse(n):
-        for _ in range(n): list(parse_eventstream(msg))
-        return n
+    def parse(count: int) -> int:
+        for _ in range(count):
+            list(parse_eventstream(message))
+        return count
 
     start = time.time()
-    with concurrent.futures.ThreadPoolExecutor(4) as ex:
-        total = sum(f.result() for f in [ex.submit(parse, 250) for _ in range(4)])
+    with concurrent.futures.ThreadPoolExecutor(4) as executor:
+        futures = [executor.submit(parse, 250) for _ in range(4)]
+        total = sum(future.result() for future in futures)
+
+    assert total == 1000
     assert (time.time() - start) < 2.0

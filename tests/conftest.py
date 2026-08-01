@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 
 import struct
+import zlib
 
 
 def create_test_message(name: bytes, value: bytes, body: bytes) -> bytes:
@@ -10,11 +11,8 @@ def create_test_message(name: bytes, value: bytes, body: bytes) -> bytes:
     headers.append(7)
     headers.extend(struct.pack(">H", len(value)))
     headers.extend(value)
-    total_len = 12 + len(headers) + len(body) + 4
-    msg = struct.pack(">I", total_len)
-    msg += struct.pack(">I", len(headers))
-    msg += struct.pack(">I", 0)
-    msg += bytes(headers)
-    msg += body
-    msg += struct.pack(">I", 0)
-    return msg
+    total_length = 16 + len(headers) + len(body)
+    prelude = struct.pack(">II", total_length, len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF)
+    message = prelude + bytes(headers) + body
+    return message + struct.pack(">I", zlib.crc32(message) & 0xFFFFFFFF)

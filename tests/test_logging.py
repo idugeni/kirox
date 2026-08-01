@@ -1,7 +1,5 @@
 """Tests for logging."""
 
-import tempfile
-from pathlib import Path
 from kirox.utils.logging import setup_logging
 
 

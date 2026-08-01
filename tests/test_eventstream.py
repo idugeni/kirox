@@ -1,46 +1,140 @@
-"""Tests for eventstream."""
+"""Tests for strict incremental EventStream decoding."""
 
 import struct
-from kirox.core.eventstream import _read_headers, parse_eventstream
+import zlib
+
+import pytest
+
+from kirox.core.errors import StreamError
+from kirox.core.eventstream import EventStreamDecoder, _read_headers, parse_eventstream
+
+
+def encode_string_header(name: bytes, value: bytes) -> bytes:
+    return bytes([len(name)]) + name + b"\x07" + struct.pack(">H", len(value)) + value
 
 
 def create_test_message(name: bytes, value: bytes, body: bytes) -> bytes:
-    headers = bytearray()
-    headers.append(len(name))
-    headers.extend(name)
-    headers.append(7)
-    headers.extend(struct.pack(">H", len(value)))
-    headers.extend(value)
-    total_len = 12 + len(headers) + len(body) + 4
-    msg = struct.pack(">I", total_len)
-    msg += struct.pack(">I", len(headers))
-    msg += struct.pack(">I", 0)
-    msg += bytes(headers)
-    msg += body
-    msg += struct.pack(">I", 0)
-    return msg
+    headers = encode_string_header(name, value)
+    total_length = 16 + len(headers) + len(body)
+    prelude = struct.pack(">II", total_length, len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF)
+    message = prelude + headers + body
+    return message + struct.pack(">I", zlib.crc32(message) & 0xFFFFFFFF)
 
 
-def test_string_header():
-    buf = bytearray()
-    name, value = b"event-type", b"test"
-    buf.append(len(name)); buf.extend(name); buf.append(7)
-    buf.extend(struct.pack(">H", len(value))); buf.extend(value)
-    assert _read_headers(bytes(buf), 0, len(buf))["event-type"].value == "test"
+def create_raw_message(headers: bytes, body: bytes = b"") -> bytes:
+    total_length = 16 + len(headers) + len(body)
+    prelude = struct.pack(">II", total_length, len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF)
+    message = prelude + headers + body
+    return message + struct.pack(">I", zlib.crc32(message) & 0xFFFFFFFF)
 
 
-def test_parse_message():
-    msg = create_test_message(b"event-type", b"test", b'{"content":"hi"}')
-    msgs = list(parse_eventstream(msg))
-    assert len(msgs) == 1
-    assert msgs[0].event_type == "test"
-    assert msgs[0].body == b'{"content":"hi"}'
+def create_prelude(total_length: int, headers_length: int) -> bytes:
+    prelude = struct.pack(">II", total_length, headers_length)
+    return prelude + struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF)
 
 
-def test_multiple_messages():
-    msg1 = create_test_message(b"event-type", b"test1", b'{"a":1}')
-    msg2 = create_test_message(b"event-type", b"test2", b'{"b":2}')
-    msgs = list(parse_eventstream(msg1 + msg2))
-    assert len(msgs) == 2
-    assert msgs[0].event_type == "test1"
-    assert msgs[1].event_type == "test2"
+def test_string_header_compatibility() -> None:
+    header = encode_string_header(b":event-type", b"test")
+    assert _read_headers(header, 0, len(header))["event-type"].value == "test"
+
+
+def test_parse_message_and_multiple_messages() -> None:
+    first = create_test_message(b"event-type", b"test1", b'{"a":1}')
+    second = create_test_message(b"event-type", b"test2", b'{"b":2}')
+
+    messages = list(parse_eventstream(first + second))
+
+    assert [message.event_type for message in messages] == ["test1", "test2"]
+    assert messages[0].body == b'{"a":1}'
+
+
+def test_decoder_handles_every_possible_chunk_boundary() -> None:
+    first = create_test_message(b"event-type", b"test1", b'{"a":1}')
+    second = create_test_message(b"event-type", b"test2", b'{"b":2}')
+    wire_data = first + second
+    decoder = EventStreamDecoder()
+    messages = []
+
+    for byte in wire_data:
+        messages.extend(decoder.feed(bytes([byte])))
+    decoder.finalize()
+
+    assert [message.event_type for message in messages] == ["test1", "test2"]
+
+
+def test_rejects_invalid_prelude_crc() -> None:
+    message = bytearray(create_test_message(b"event-type", b"test", b"body"))
+    message[8] ^= 0x01
+
+    with pytest.raises(StreamError, match="prelude CRC"):
+        list(parse_eventstream(bytes(message)))
+
+
+def test_rejects_invalid_message_crc() -> None:
+    message = bytearray(create_test_message(b"event-type", b"test", b"body"))
+    message[-1] ^= 0x01
+
+    with pytest.raises(StreamError, match="message CRC"):
+        list(parse_eventstream(bytes(message)))
+
+
+@pytest.mark.parametrize(
+    ("prelude", "error"),
+    [
+        (create_prelude(15, 0), "total length"),
+        (create_prelude(16, 1), "message bounds"),
+        (create_prelude(65, 0), "64-byte limit"),
+        (create_prelude(32, 9), "8-byte limit"),
+    ],
+)
+def test_rejects_invalid_lengths(prelude: bytes, error: str) -> None:
+    decoder = EventStreamDecoder(max_message_size=64, max_headers_size=8)
+
+    with pytest.raises(StreamError, match=error):
+        decoder.feed(prelude)
+
+
+def test_rejects_unknown_and_truncated_header_types() -> None:
+    unknown_type = bytes([1]) + b"x" + b"\xff"
+    truncated_string = bytes([1]) + b"x" + b"\x07" + struct.pack(">H", 4) + b"ab"
+
+    with pytest.raises(StreamError, match="Unsupported.*type"):
+        list(parse_eventstream(create_raw_message(unknown_type)))
+    with pytest.raises(StreamError, match="Truncated.*value"):
+        list(parse_eventstream(create_raw_message(truncated_string)))
+
+
+def test_parses_byte_array_timestamp_and_uuid_headers() -> None:
+    byte_array = bytes([3]) + b"bin" + b"\x06" + struct.pack(">H", 2) + b"\x01\x02"
+    timestamp = bytes([2]) + b"ts" + b"\x08" + struct.pack(">q", 1234)
+    uuid_value = bytes(range(16))
+    uuid_header = bytes([2]) + b"id" + b"\x09" + uuid_value
+
+    message = list(parse_eventstream(create_raw_message(byte_array + timestamp + uuid_header)))[0]
+
+    assert message.headers["bin"].value == b"\x01\x02"
+    assert message.headers["ts"].value == 1234
+    assert message.headers["id"].value == uuid_value.hex()
+
+
+def test_finalize_rejects_truncated_frame_and_trailing_bytes() -> None:
+    message = create_test_message(b"event-type", b"test", b"body")
+    decoder = EventStreamDecoder()
+    assert decoder.feed(message[:-1]) == []
+    with pytest.raises(StreamError, match="Truncated EventStream message"):
+        decoder.finalize()
+
+    decoder = EventStreamDecoder()
+    assert len(decoder.feed(message + b"x")) == 1
+    with pytest.raises(StreamError, match="Truncated EventStream prelude"):
+        decoder.finalize()
+
+
+def test_feed_after_finalize_is_rejected() -> None:
+    decoder = EventStreamDecoder()
+    decoder.finalize()
+
+    with pytest.raises(StreamError, match="already been finalized"):
+        decoder.feed(b"")

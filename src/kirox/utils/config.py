@@ -1,6 +1,7 @@
 """Configuration management."""
 
 from __future__ import annotations
+
 import json
 import os
 from dataclasses import dataclass
@@ -42,7 +43,10 @@ def load_config(config_path: Optional[Path] = None) -> Config:
     if config_path is None:
         config_path = Path.home() / ".kirox" / "config.json"
     config = Config.from_file(config_path)
-    if os.environ.get("KIROX_TOKEN"): config.token = os.environ["KIROX_TOKEN"]
-    if os.environ.get("KIROX_PROFILE_ARN"): config.profile_arn = os.environ["KIROX_PROFILE_ARN"]
-    if os.environ.get("KIROX_REGION"): config.region = os.environ["KIROX_REGION"]
+    if os.environ.get("KIROX_TOKEN"):
+        config.token = os.environ["KIROX_TOKEN"]
+    if os.environ.get("KIROX_PROFILE_ARN"):
+        config.profile_arn = os.environ["KIROX_PROFILE_ARN"]
+    if os.environ.get("KIROX_REGION"):
+        config.region = os.environ["KIROX_REGION"]
     return config

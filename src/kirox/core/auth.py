@@ -1,219 +1,340 @@
-"""Authentication — auto-detect credentials."""
+"""Deterministic authentication credential resolution."""
 
 from __future__ import annotations
+
 import json
 import os
 import sqlite3
-import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
 from kirox.core.errors import AuthenticationError
+
+_ENV_PREFIXES = ("KIROX", "ASSISTANT")
+
+
+def _nonempty_string(value: object | None) -> Optional[str]:
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
+
+
+def _config_value(config: object | None, key: str) -> object | None:
+    if config is None:
+        return None
+    if isinstance(config, Mapping):
+        return config.get(key)
+    return getattr(config, key, None)
 
 
 class AuthManager:
-    """Auto-detect and manage credentials."""
-    
+    """Resolve and manage bearer credentials without secret discovery scans."""
+
     def __init__(self, token: Optional[str] = None, profile_arn: Optional[str] = None):
         self._token = token
         self._profile_arn = profile_arn
-        self._source: str = "unknown"
+        self._source = "unknown"
 
     @classmethod
-    def auto_detect(cls) -> AuthManager:
-        """Auto-detect credentials from all sources."""
-        # 1. Try environment variables first
-        try:
-            auth = cls.from_env()
-            auth._source = "environment"
-            return auth
-        except AuthenticationError:
-            pass
+    def resolve(
+        cls,
+        *,
+        token: Optional[str] = None,
+        profile_arn: Optional[str] = None,
+        db_path: Optional[str | Path] = None,
+        config: object | None = None,
+        environ: Optional[Mapping[str, str]] = None,
+    ) -> AuthManager:
+        """Resolve explicit/config, KIROX, ASSISTANT, then fixed CLI DB sources."""
+        return cls._resolve(
+            token=token,
+            profile_arn=profile_arn,
+            db_path=db_path,
+            config=config,
+            environ=os.environ if environ is None else environ,
+            include_direct=True,
+            include_environment=True,
+            include_cli_db=True,
+        )
 
-        # 2. Try kiro-cli database
-        try:
-            auth = cls.from_cli_db()
-            auth._source = "kiro-cli"
-            return auth
-        except AuthenticationError:
-            pass
-
-        # 3. Try to extract from kiro-cli process
-        try:
-            auth = cls._from_process()
-            auth._source = "process"
-            return auth
-        except Exception:
-            pass
-
-        # 4. Try to find any SQLite database with tokens
-        try:
-            auth = cls._scan_databases()
-            auth._source = "scan"
-            return auth
-        except AuthenticationError:
-            pass
-
-        raise AuthenticationError(
-            "No credentials found. Please:\n"
-            "  1. Install kiro-cli: pip install kiro-cli\n"
-            "  2. Login: kiro-cli login\n"
-            "  3. Or set env: export KIROX_TOKEN=your-token"
+    @classmethod
+    def auto_detect(
+        cls,
+        *,
+        token: Optional[str] = None,
+        profile_arn: Optional[str] = None,
+        db_path: Optional[str | Path] = None,
+        config: object | None = None,
+    ) -> AuthManager:
+        """Backward-compatible delegate to the deterministic resolver."""
+        return cls.resolve(
+            token=token,
+            profile_arn=profile_arn,
+            db_path=db_path,
+            config=config,
         )
 
     @classmethod
     def from_env(cls) -> AuthManager:
-        """Load from environment variables."""
-        token = (
-            os.environ.get("KIROX_TOKEN") or
-            os.environ.get("ASSISTANT_TOKEN") or
-            os.environ.get("OPENAI_API_KEY")  # Some tools use this
+        """Load KIROX variables before their ASSISTANT aliases."""
+        return cls._resolve(
+            environ=os.environ,
+            include_direct=False,
+            include_environment=True,
+            include_cli_db=False,
         )
-        if not token:
-            raise AuthenticationError("No token in environment")
-        
-        profile_arn = (
-            os.environ.get("KIROX_PROFILE_ARN") or
-            os.environ.get("ASSISTANT_PROFILE_ARN")
-        )
-        return cls(token=token, profile_arn=profile_arn)
 
     @classmethod
     def from_cli_db(cls, db_path: Optional[str | Path] = None) -> AuthManager:
-        """Load from kiro-cli database."""
-        if db_path:
-            return cls._read_sqlite(Path(db_path))
+        """Load an explicit or fixed-location kiro-cli database."""
+        return cls._resolve(
+            db_path=db_path,
+            environ={},
+            include_direct=False,
+            include_environment=False,
+            include_cli_db=True,
+        )
 
-        # Auto-detect database location
+    @classmethod
+    def _resolve(
+        cls,
+        *,
+        token: Optional[str] = None,
+        profile_arn: Optional[str] = None,
+        db_path: Optional[str | Path] = None,
+        config: object | None = None,
+        environ: Mapping[str, str],
+        include_direct: bool,
+        include_environment: bool,
+        include_cli_db: bool,
+    ) -> AuthManager:
+        explicit_token = _nonempty_string(token) if include_direct else None
+        config_token = _nonempty_string(_config_value(config, "token")) if include_direct else None
+        explicit_profile = _nonempty_string(profile_arn) if include_direct else None
+        config_profile = (
+            _nonempty_string(_config_value(config, "profile_arn")) if include_direct else None
+        )
+        kirox_token = _nonempty_string(environ.get("KIROX_TOKEN")) if include_environment else None
+        kirox_profile = (
+            _nonempty_string(environ.get("KIROX_PROFILE_ARN")) if include_environment else None
+        )
+
+        if explicit_token is not None:
+            return cls._from_values(explicit_token, explicit_profile, "explicit")
+
+        # load_config() overlays KIROX auth fields independently. Treat exact
+        # duplicates as environment provenance so a partial overlay cannot form
+        # a mixed config/environment credential bundle.
+        config_token_is_kirox = kirox_token is not None and config_token == kirox_token
+        config_profile_is_kirox = kirox_profile is not None and config_profile == kirox_profile
+        if config_token is not None and not config_token_is_kirox:
+            trusted_config_profile = None if config_profile_is_kirox else config_profile
+            return cls._from_values(config_token, trusted_config_profile, "config")
+
+        if include_environment:
+            for prefix in _ENV_PREFIXES:
+                environment_token = _nonempty_string(environ.get(f"{prefix}_TOKEN"))
+                if environment_token is not None:
+                    environment_profile = _nonempty_string(environ.get(f"{prefix}_PROFILE_ARN"))
+                    return cls._from_values(
+                        environment_token,
+                        environment_profile,
+                        f"environment:{prefix}",
+                    )
+
+        if include_cli_db:
+            configured_db_path = cls._configured_db_path(
+                db_path=db_path,
+                config=config if include_direct else None,
+                environ=environ if include_environment else {},
+            )
+            if configured_db_path is not None:
+                auth = cls._read_sqlite(configured_db_path)
+                auth._source = "cli-db:configured"
+                return auth
+
+            for candidate in cls._known_cli_db_paths():
+                if not candidate.is_file():
+                    continue
+                try:
+                    auth = cls._read_sqlite(candidate)
+                except AuthenticationError:
+                    continue
+                auth._source = "cli-db:fixed"
+                return auth
+
+        if include_environment and include_cli_db:
+            raise AuthenticationError(
+                "No credentials found. Set KIROX_TOKEN or ASSISTANT_TOKEN, or log in with kiro-cli."
+            )
+        if include_environment:
+            raise AuthenticationError("No token in environment")
+        raise AuthenticationError("No credential-bearing kiro-cli database found")
+
+    @classmethod
+    def _from_values(
+        cls,
+        token: str,
+        profile_arn: Optional[str],
+        source: str,
+    ) -> AuthManager:
+        auth = cls(token=token, profile_arn=profile_arn)
+        auth._source = source
+        return auth
+
+    @staticmethod
+    def _configured_db_path(
+        *,
+        db_path: Optional[str | Path],
+        config: object | None,
+        environ: Mapping[str, str],
+    ) -> Optional[Path]:
+        candidates: tuple[object | None, ...] = (
+            db_path,
+            _config_value(config, "db_path"),
+            environ.get("KIROX_DB_PATH"),
+            environ.get("ASSISTANT_DB_PATH"),
+        )
+        for candidate in candidates:
+            if isinstance(candidate, Path):
+                return candidate.expanduser()
+            candidate_string = _nonempty_string(candidate)
+            if candidate_string is not None:
+                return Path(candidate_string).expanduser()
+        return None
+
+    @staticmethod
+    def _known_cli_db_paths() -> tuple[Path, ...]:
         home = Path.home()
-        candidates = [
-            # Windows
+        return (
             home / "AppData" / "Local" / "Kiro-Cli" / "data.sqlite3",
             home / "AppData" / "Local" / "kiro-cli" / "data.sqlite3",
             home / "AppData" / "Local" / "Kiro" / "data.sqlite3",
-            # Linux
             home / ".kiro" / "data.sqlite3",
             home / ".config" / "kiro" / "data.sqlite3",
             home / ".local" / "share" / "kiro" / "data.sqlite3",
-            # macOS
             home / "Library" / "Application Support" / "Kiro" / "data.sqlite3",
             home / "Library" / "Application Support" / "kiro-cli" / "data.sqlite3",
-        ]
-
-        for p in candidates:
-            if p.exists():
-                try:
-                    auth = cls._read_sqlite(p)
-                    auth._source = str(p)
-                    return auth
-                except Exception:
-                    continue
-
-        raise AuthenticationError("No kiro-cli database found")
-
-    @classmethod
-    def _from_process(cls) -> AuthManager:
-        """Try to extract credentials from running kiro-cli process."""
-        try:
-            # Check if kiro-cli is running
-            result = subprocess.run(
-                ["tasklist" if os.name == "nt" else "ps", "aux"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if "kiro" in result.stdout.lower():
-                # Try to find the database from process
-                # This is a fallback - not always reliable
-                pass
-        except Exception:
-            pass
-        raise AuthenticationError("Could not extract from process")
-
-    @classmethod
-    def _scan_databases(cls) -> AuthManager:
-        """Scan common locations for any SQLite database with tokens."""
-        home = Path.home()
-        
-        # Common database locations
-        search_dirs = [
-            home / "AppData" / "Local",
-            home / ".config",
-            home / ".local" / "share",
-        ]
-        
-        for search_dir in search_dirs:
-            if not search_dir.exists():
-                continue
-            
-            try:
-                # Find all .sqlite3 files
-                for db_path in search_dir.rglob("*.sqlite3"):
-                    try:
-                        auth = cls._read_sqlite(db_path)
-                        if auth.is_authenticated:
-                            auth._source = str(db_path)
-                            return auth
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        raise AuthenticationError("No credentials found in any database")
+        )
 
     @classmethod
     def _read_sqlite(cls, db_path: Path) -> AuthManager:
-        """Read token from SQLite database."""
-        conn = sqlite3.connect(str(db_path))
+        """Read a token from supported CLI tables without exposing row values."""
+        if not db_path.is_file():
+            raise AuthenticationError("Credential database not found")
+
         try:
-            cursor = conn.cursor()
-            token, profile_arn = None, None
+            connection = sqlite3.connect(str(db_path))
+        except sqlite3.Error:
+            raise AuthenticationError("Unable to open credential database") from None
 
-            # Try auth_kv table
-            try:
-                for key, value in cursor.execute("SELECT key, value FROM auth_kv").fetchall():
-                    if "token" in key.lower():
-                        try:
-                            data = json.loads(value)
-                            token = data.get("access_token", value)
-                        except (json.JSONDecodeError, TypeError):
-                            token = value
-                    if "profile" in key.lower():
-                        try:
-                            data = json.loads(value)
-                            profile_arn = data.get("arn", value)
-                        except (json.JSONDecodeError, TypeError):
-                            profile_arn = value
-            except sqlite3.OperationalError:
-                pass
+        try:
+            auth_rows = cls._optional_query(
+                connection,
+                "SELECT key, value FROM auth_kv ORDER BY key",
+            )
+            state_rows = cls._optional_query(
+                connection,
+                "SELECT key, value FROM state ORDER BY key",
+            )
+            secret_rows = cls._optional_query(
+                connection,
+                "SELECT name, secret FROM secrets ORDER BY name",
+            )
 
-            # Try state table
-            if not profile_arn:
-                try:
-                    for key, value in cursor.execute("SELECT key, value FROM state").fetchall():
-                        if "profile" in key.lower():
-                            try:
-                                data = json.loads(value)
-                                profile_arn = data.get("arn", value)
-                            except (json.JSONDecodeError, TypeError):
-                                profile_arn = value
-                except sqlite3.OperationalError:
-                    pass
+            token: Optional[str] = None
+            profile_arn: Optional[str] = None
+            for key, value in auth_rows:
+                key_string = _nonempty_string(key)
+                if key_string is None:
+                    continue
+                if token is None:
+                    token = cls._token_from_db_value(key_string, value)
+                if profile_arn is None:
+                    profile_arn = cls._profile_from_db_value(key_string, value)
 
-            # Try secrets table
-            if not token:
-                try:
-                    for name, secret in cursor.execute("SELECT name, secret FROM secrets").fetchall():
-                        if secret and secret.startswith("aoa"):
-                            token = secret
-                except sqlite3.OperationalError:
-                    pass
+            if profile_arn is None:
+                for key, value in state_rows:
+                    key_string = _nonempty_string(key)
+                    if key_string is None:
+                        continue
+                    profile_arn = cls._profile_from_db_value(key_string, value)
+                    if profile_arn is not None:
+                        break
 
-            if not token:
-                raise AuthenticationError("No token in database")
-
-            return cls(token=token, profile_arn=profile_arn)
+            if token is None:
+                for name, secret in secret_rows:
+                    name_string = _nonempty_string(name) or ""
+                    secret_string = _nonempty_string(secret)
+                    if secret_string is None:
+                        continue
+                    if secret_string.startswith("aoa") or (
+                        "token" in name_string.lower() and "refresh" not in name_string.lower()
+                    ):
+                        token = secret_string
+                        break
+        except sqlite3.Error:
+            raise AuthenticationError("Credential database is malformed or unreadable") from None
         finally:
-            conn.close()
+            connection.close()
+
+        if token is None:
+            raise AuthenticationError("No token in credential database")
+        return cls(token=token, profile_arn=profile_arn)
+
+    @staticmethod
+    def _optional_query(
+        connection: sqlite3.Connection,
+        query: str,
+    ) -> Sequence[tuple[Any, ...]]:
+        try:
+            return connection.execute(query).fetchall()
+        except sqlite3.OperationalError:
+            return ()
+
+    @staticmethod
+    def _decoded_db_value(value: object) -> object | None:
+        text = _nonempty_string(value)
+        if text is None:
+            return None
+        if text.lstrip().startswith(("{", "[", '"')):
+            try:
+                return json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return text
+
+    @classmethod
+    def _token_from_db_value(cls, key: str, value: object) -> Optional[str]:
+        decoded = cls._decoded_db_value(value)
+        if isinstance(decoded, Mapping):
+            for field in ("access_token", "accessToken", "token"):
+                token = _nonempty_string(decoded.get(field))
+                if token is not None:
+                    return token
+            return None
+        if "token" not in key.lower() or "refresh" in key.lower():
+            return None
+        return _nonempty_string(decoded)
+
+    @classmethod
+    def _profile_from_db_value(cls, key: str, value: object) -> Optional[str]:
+        if "profile" not in key.lower():
+            return None
+        decoded = cls._decoded_db_value(value)
+        if isinstance(decoded, Mapping):
+            for field in ("arn", "profile_arn", "profileArn"):
+                profile_arn = _nonempty_string(decoded.get(field))
+                if profile_arn is not None:
+                    return profile_arn
+            return None
+        return _nonempty_string(decoded)
 
     @property
     def is_authenticated(self) -> bool:
@@ -224,14 +345,14 @@ class AuthManager:
         return self._source
 
     def get_headers(self) -> dict[str, str]:
-        """Get headers for API requests."""
-        h = {"Content-Type": "application/x-amz-json-1.0"}
+        """Get headers for authenticated API requests."""
+        headers = {"Content-Type": "application/x-amz-json-1.0"}
         if self._token:
-            h["Authorization"] = f"Bearer {self._token}"
+            headers["Authorization"] = f"Bearer {self._token}"
         if self._profile_arn:
-            h["x-amzn-profile-arn"] = self._profile_arn
-        return h
+            headers["x-amzn-profile-arn"] = self._profile_arn
+        return headers
 
     def __repr__(self) -> str:
         token_mask = "***" if self._token else "None"
-        return f"AuthManager(token={token_mask}, source={self._source})"
+        return f"AuthManager(token={token_mask}, source={self._source!r})"

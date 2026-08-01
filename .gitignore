@@ -49,5 +49,25 @@ Desktop.ini
 .env
 .env.*
 !.env.example
-.kuro/
+.kiro/
 *.mitm
+
+# Compiled extensions on Windows (companion to *.so above)
+*.pyd
+
+# Type checker daemons and caches not covered above
+.dmypy.json
+dmypy.json
+.pyrefly_cache/
+
+# Local interpreter pins and build metadata
+.python-version
+pip-wheel-metadata/
+
+# Merge, patch, and backup leftovers
+*.orig
+*.rej
+*.bak
+
+# Created by mistyped PowerShell redirection on Windows
+nul
