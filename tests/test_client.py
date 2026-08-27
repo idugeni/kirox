@@ -10,7 +10,12 @@ import httpx
 import pytest
 
 from kirox.core.auth import AuthManager
-from kirox.core.client import CATALOG_ORIGIN, AssistantClient
+from kirox.core.client import (
+    CATALOG_ORIGIN,
+    RUNTIME_SERVICE,
+    AssistantClient,
+    _default_runtime_url,
+)
 from kirox.core.errors import APIError, StreamError
 from kirox.core.eventstream import EventStreamDecoder
 from kirox.core.models import ToolSpec
@@ -209,7 +214,7 @@ def test_list_tools_preserves_request_parses_schema_and_closes_response() -> Non
     assert tools[0].input_schema["additionalProperties"] is False
     assert tools[0].input_schema["properties"]["q"]["enum"] == ["a", "b"]
     assert requests[0].url == "https://runtime.test"
-    assert requests[0].headers["x-amz-target"] == "KiroRuntimeService.InvokeMCP"
+    assert requests[0].headers["x-amz-target"] == f"{RUNTIME_SERVICE}.InvokeMCP"
     assert json.loads(requests[0].content) == {
         "id": "tools_list",
         "method": "tools/list",
@@ -326,11 +331,41 @@ def test_list_models_requests_the_runtime_entitled_catalog() -> None:
 
     client.list_models()
 
-    # The management plane advertises a superset for editor-class origins whose
-    # newest entries the runtime rejects with INVALID_MODEL_ID. Kirox must ask
-    # for the catalog the runtime actually serves.
-    assert seen == [{"origin": "IDE", "profileArn": "arn"}]
-    assert CATALOG_ORIGIN == "IDE"
+    # The runtime serves the full catalog, so Kirox asks for the full catalog.
+    assert seen == [{"origin": "AI_EDITOR", "profileArn": "arn"}]
+    assert CATALOG_ORIGIN == "AI_EDITOR"
+    client.close()
+
+
+def test_runtime_defaults_to_the_endpoint_that_serves_every_model() -> None:
+    # runtime.{region}.kiro.dev rejects the newest models with INVALID_MODEL_ID
+    # regardless of origin, header, or request field. The CodeWhisperer streaming
+    # endpoint accepts the same request shape and serves the whole catalog.
+    assert _default_runtime_url("us-east-1") == "https://codewhisperer.us-east-1.amazonaws.com"
+    assert (
+        _default_runtime_url("eu-central-1") == "https://codewhisperer.eu-central-1.amazonaws.com"
+    )
+    assert RUNTIME_SERVICE == "AmazonCodeWhispererStreamingService"
+
+
+def test_chat_targets_the_runtime_service_and_honors_an_injected_url() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, content=b"")
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = AssistantClient(
+        auth=AuthManager(token="token"),
+        runtime_url="https://runtime.test",
+        http_client=http_client,
+    )
+
+    list(client.chat("hello"))
+
+    assert requests[0].url == "https://runtime.test"
+    assert requests[0].headers["x-amz-target"] == f"{RUNTIME_SERVICE}.GenerateAssistantResponse"
     client.close()
 
 

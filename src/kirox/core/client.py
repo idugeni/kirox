@@ -14,13 +14,23 @@ from kirox.core.errors import APIError, AuthenticationError, StreamError
 from kirox.core.eventstream import EventStreamDecoder
 from kirox.core.models import ModelInfo, StreamEvent, ToolSpec
 
-# The management plane returns a different catalog per client class, while the
-# runtime enforces one entitlement set per credential. `AI_EDITOR`, `KIRO_WEB`,
-# `KIRO_CONSOLE`, and `KIRO_CLI` advertise a superset whose newest entries the
-# runtime then rejects with `INVALID_MODEL_ID`; `IDE` returns exactly the set the
-# runtime serves. Kirox asks for the catalog it can actually use, so every listed
-# model is callable instead of a third of them failing at request time.
-CATALOG_ORIGIN: Final = "IDE"
+# The management plane returns a different catalog per client class. `AI_EDITOR`,
+# `KIRO_WEB`, `KIRO_CONSOLE`, and `KIRO_CLI` return the full catalog; `IDE` and
+# `CLI` return smaller subsets. Kirox asks for the full catalog because the
+# runtime below serves all of it.
+CATALOG_ORIGIN: Final = "AI_EDITOR"
+
+# Two runtimes accept the same request shape and return the same EventStream
+# frames, but they do not serve the same models. `runtime.{region}.kiro.dev`
+# rejects the newest models with `INVALID_MODEL_ID` no matter which origin,
+# header, or request field is used, while the CodeWhisperer streaming endpoint
+# serves every model the management plane advertises. Kirox uses the endpoint that
+# can actually run the catalog it lists.
+RUNTIME_SERVICE: Final = "AmazonCodeWhispererStreamingService"
+
+
+def _default_runtime_url(region: str) -> str:
+    return f"https://codewhisperer.{region}.amazonaws.com"
 
 
 def _error_body(response: httpx.Response) -> Any:
@@ -58,7 +68,7 @@ class AssistantClient:
     ) -> None:
         self._auth = auth
         self._region = region
-        self._runtime_url = runtime_url or f"https://runtime.{region}.kiro.dev"
+        self._runtime_url = runtime_url or _default_runtime_url(region)
         self._management_url = f"https://management.{region}.kiro.dev"
         self._session_id: Optional[str] = None
         self._conversation_id: Optional[str] = None
@@ -173,7 +183,7 @@ class AssistantClient:
             self._runtime_url,
             headers={
                 **self.auth.get_headers(),
-                "x-amz-target": "KiroRuntimeService.InvokeMCP",
+                "x-amz-target": f"{RUNTIME_SERVICE}.InvokeMCP",
             },
             json=body,
         )
@@ -253,7 +263,7 @@ class AssistantClient:
             self._runtime_url,
             headers={
                 **auth.get_headers(),
-                "x-amz-target": "KiroRuntimeService.GenerateAssistantResponse",
+                "x-amz-target": f"{RUNTIME_SERVICE}.GenerateAssistantResponse",
             },
             json=body,
         ) as response:

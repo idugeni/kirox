@@ -107,7 +107,9 @@ GET /v1/models
 }
 ```
 
-The catalog is requested from the upstream management plane with origin `IDE`. That origin returns exactly the models the runtime will serve for a given credential, so every listed model is callable. Editor-class origins such as `AI_EDITOR` advertise a larger catalog whose newest entries the runtime then rejects with `INVALID_MODEL_ID`, which is why Kirox does not use them. The catalog therefore reflects the account's actual entitlement rather than the full product line-up, and it can differ between accounts.
+The catalog is requested from the upstream management plane with origin `AI_EDITOR`, the full catalog, and the runtime serves all of it.
+
+Kirox calls the CodeWhisperer streaming endpoint, `https://codewhisperer.{region}.amazonaws.com`, with the `AmazonCodeWhispererStreamingService` target prefix. The Kiro-branded runtime `runtime.{region}.kiro.dev` accepts the same request shape and returns the same EventStream frames, but rejects the newest models with `INVALID_MODEL_ID` regardless of catalog origin, request headers, or request fields. Kirox uses the endpoint that can run the catalog it lists. Pass `runtime_url` to `AssistantClient` to override the default.
 
 ### Chat completion
 

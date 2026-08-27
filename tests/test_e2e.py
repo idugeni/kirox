@@ -62,5 +62,9 @@ def test_mock_models():
 
 def test_mock_tools():
     with create_mock_app().test_client() as c:
-        r = c.post("/", headers={"x-amz-target": "KiroRuntimeService.InvokeMCP"}, json={})
+        r = c.post(
+            "/",
+            headers={"x-amz-target": "AmazonCodeWhispererStreamingService.InvokeMCP"},
+            json={},
+        )
         assert len(r.get_json()["result"]["tools"]) == 1

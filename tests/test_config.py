@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from kirox.core.client import _default_runtime_url
 from kirox.utils.config import (
     Config,
     ConfigError,
@@ -124,7 +125,7 @@ def test_string_fields_are_stripped_so_they_cannot_corrupt_urls() -> None:
     config = Config(region=" us-east-1 ")
 
     assert config.region == "us-east-1"
-    assert f"https://runtime.{config.region}.kiro.dev" == "https://runtime.us-east-1.kiro.dev"
+    assert _default_runtime_url(config.region) == "https://codewhisperer.us-east-1.amazonaws.com"
 
 
 @pytest.mark.parametrize(

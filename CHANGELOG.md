@@ -2,6 +2,17 @@
 
 All notable changes to Kirox are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-08-27
+
+### Changed
+
+- The upstream runtime is now the CodeWhisperer streaming endpoint, `https://codewhisperer.{region}.amazonaws.com`, with the `AmazonCodeWhispererStreamingService` target prefix. `runtime.{region}.kiro.dev` rejects the newest models with `INVALID_MODEL_ID` — every Claude Opus above 4.5, Claude Sonnet 5, and the whole GPT 5.6 family — while the CodeWhisperer endpoint accepts the identical request shape, returns the identical EventStream frames, and serves every model the management plane advertises. `GenerateAssistantResponse` and `InvokeMCP` both moved. An explicit `runtime_url` still overrides the default.
+- `list_models()` asks for origin `AI_EDITOR` again, which is the full catalog, because the runtime now serves all of it. This reverses the 1.2.1 change: that release narrowed the catalog to origin `IDE` to match what `runtime.kiro.dev` would serve, which was the wrong half of the mismatch to fix.
+
+### Fixed
+
+- Every advertised model is callable. On a KIRO POWER account the catalog went from 11 usable of 19 advertised to 19 of 19, verified model by model through the SDK and through both provider-compatible bridges, buffered and streaming.
+
 ## [1.2.1] - 2026-08-27
 
 ### Fixed
