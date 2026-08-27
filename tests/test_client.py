@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from kirox.core.auth import AuthManager
-from kirox.core.client import AssistantClient
+from kirox.core.client import CATALOG_ORIGIN, AssistantClient
 from kirox.core.errors import APIError, StreamError
 from kirox.core.eventstream import EventStreamDecoder
 from kirox.core.models import ToolSpec
@@ -308,6 +308,65 @@ def test_list_tools_allows_empty_success_and_closes_response() -> None:
 
     assert client.list_tools() == []
     assert stream.closed
+    client.close()
+
+
+def test_list_models_requests_the_runtime_entitled_catalog() -> None:
+    seen: list[Any] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"models": []})
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = AssistantClient(
+        auth=AuthManager(token="token", profile_arn="arn"),
+        http_client=http_client,
+    )
+
+    client.list_models()
+
+    # The management plane advertises a superset for editor-class origins whose
+    # newest entries the runtime rejects with INVALID_MODEL_ID. Kirox must ask
+    # for the catalog the runtime actually serves.
+    assert seen == [{"origin": "IDE", "profileArn": "arn"}]
+    assert CATALOG_ORIGIN == "IDE"
+    client.close()
+
+
+def test_list_models_error_keeps_the_upstream_body() -> None:
+    body = {"__type": "ValidationException", "reason": "INVALID_PROFILE"}
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(400, json=body))
+    )
+    client = AssistantClient(auth=AuthManager(token="token"), http_client=http_client)
+
+    with pytest.raises(APIError) as exc_info:
+        client.list_models()
+
+    assert exc_info.value.status == 400
+    assert exc_info.value.response_body == body
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (json.dumps({"reason": "INVALID_MODEL_ID"}).encode(), {"reason": "INVALID_MODEL_ID"}),
+        (b"not json at all", "not json at all"),
+    ],
+)
+def test_chat_error_keeps_the_upstream_body(content: bytes, expected: Any) -> None:
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(400, content=content))
+    )
+    client = AssistantClient(auth=AuthManager(token="token"), http_client=http_client)
+
+    with pytest.raises(APIError) as exc_info:
+        list(client.chat("hello", model_id="claude-sonnet-5"))
+
+    assert exc_info.value.status == 400
+    assert exc_info.value.response_body == expected
     client.close()
 
 

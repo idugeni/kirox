@@ -2,6 +2,14 @@
 
 All notable changes to Kirox are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-08-27
+
+### Fixed
+
+- Every model Kirox lists is now callable. `list_models()` requested the upstream catalog with origin `AI_EDITOR`, which returns a superset that the runtime does not honor: eight of nineteen advertised models failed at request time with `INVALID_MODEL_ID`. Origin `IDE` returns exactly the set the runtime serves for a credential, so the advertised catalog and the usable catalog are the same list. The catalog now reflects an account's actual entitlement rather than the full product line-up, so it can be shorter than before and can differ between accounts.
+- `AssistantClient.chat()` no longer discards the upstream error body. A streaming response has no body until it is read, so a non-200 status raised `APIError` carrying only a status code and the upstream `reason` was lost. `list_models()` keeps its error body too, matching `list_tools()`.
+- An upstream HTTP 400 is now reported as HTTP 400 `invalid_request_error` instead of HTTP 502 `Upstream service request failed`. Upstream rejecting the request is the caller's error, not a gateway failure, and reporting it as 502 made a correctable mistake look like an outage. A known upstream `reason` code is translated into an actionable message — `INVALID_MODEL_ID` becomes `The requested model is not available for this account` — while an unrecognized code falls back to generic text. Upstream wording is still never forwarded.
+
 ## [1.2.0] - 2026-08-27
 
 ### Added

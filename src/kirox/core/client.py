@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from copy import deepcopy
 from types import TracebackType
-from typing import Any, Generator, Optional
+from typing import Any, Final, Generator, Optional
 
 import httpx
 
@@ -13,6 +13,22 @@ from kirox.core.auth import AuthManager
 from kirox.core.errors import APIError, AuthenticationError, StreamError
 from kirox.core.eventstream import EventStreamDecoder
 from kirox.core.models import ModelInfo, StreamEvent, ToolSpec
+
+# The management plane returns a different catalog per client class, while the
+# runtime enforces one entitlement set per credential. `AI_EDITOR`, `KIRO_WEB`,
+# `KIRO_CONSOLE`, and `KIRO_CLI` advertise a superset whose newest entries the
+# runtime then rejects with `INVALID_MODEL_ID`; `IDE` returns exactly the set the
+# runtime serves. Kirox asks for the catalog it can actually use, so every listed
+# model is callable instead of a third of them failing at request time.
+CATALOG_ORIGIN: Final = "IDE"
+
+
+def _error_body(response: httpx.Response) -> Any:
+    """Read an upstream error body, preferring JSON and never raising."""
+    try:
+        return response.json()
+    except ValueError:
+        return response.text
 
 
 def _optional_model_id(event_data: dict[str, Any]) -> Optional[str]:
@@ -120,11 +136,15 @@ class AssistantClient:
                 **self.auth.get_headers(),
                 "x-amz-target": "KiroControlPlaneBearerService.ListAvailableModels",
             },
-            json={"origin": "AI_EDITOR", "profileArn": self.auth.profile_arn},
+            json={"origin": CATALOG_ORIGIN, "profileArn": self.auth.profile_arn},
         )
         try:
             if response.status_code != 200:
-                raise APIError(f"Error {response.status_code}", response.status_code)
+                raise APIError(
+                    f"Error {response.status_code}",
+                    response.status_code,
+                    _error_body(response),
+                )
             try:
                 payload: Any = response.json()
             except ValueError as exc:
@@ -238,7 +258,15 @@ class AssistantClient:
             json=body,
         ) as response:
             if response.status_code != 200:
-                raise APIError(f"Error {response.status_code}", response.status_code)
+                # A streaming response has no body until it is read. Read it so
+                # the upstream reason, such as INVALID_MODEL_ID, survives to the
+                # caller instead of collapsing into a bare status code.
+                response.read()
+                raise APIError(
+                    f"Error {response.status_code}",
+                    response.status_code,
+                    _error_body(response),
+                )
 
             for chunk in response.iter_bytes():
                 for message_frame in decoder.feed(chunk):

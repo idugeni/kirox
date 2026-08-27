@@ -35,6 +35,13 @@ CONTROL_SHUTDOWN_PATH = "/_kirox/shutdown"
 CONTROL_TOKEN_HEADER = "X-Kirox-Control-Token"
 APP_CLIENT_CLOSER = "kirox_close_owned_client"
 _MAX_JSON_CONTENT_LENGTH = 1024 * 1024
+_UPSTREAM_INVALID_REQUEST = "Upstream rejected the request as invalid"
+# Upstream `reason` codes are a stable contract, so a known one is translated
+# into an actionable message. Anything unrecognized falls back to the generic
+# text rather than forwarding upstream wording.
+_UPSTREAM_REASON_MESSAGES = {
+    "INVALID_MODEL_ID": "The requested model is not available for this account",
+}
 _SSE_HEADERS = {
     "Cache-Control": "no-cache, no-transform",
     "X-Accel-Buffering": "no",
@@ -173,11 +180,29 @@ def _request_payload() -> Any:
     return request.get_json(silent=True)
 
 
+def _upstream_reason(error: Exception) -> Optional[str]:
+    """Read the upstream `reason` code, which is a contract value, not free text."""
+    if not isinstance(error, APIError) or not isinstance(error.response_body, dict):
+        return None
+    reason = error.response_body.get("reason")
+    return reason if isinstance(reason, str) else None
+
+
 def _mapped_error(error: Exception) -> tuple[int, str, str]:
     if isinstance(error, AuthenticationError) or (
         isinstance(error, APIError) and error.status in {401, 403}
     ):
         return 401, "authentication_error", "Authentication required"
+    if isinstance(error, APIError) and error.status == 400:
+        # Upstream rejected the request itself, so this is the caller's error and
+        # not a gateway failure. Only a known reason code is surfaced; arbitrary
+        # upstream text is never forwarded.
+        reason = _upstream_reason(error)
+        return (
+            400,
+            "invalid_request_error",
+            _UPSTREAM_REASON_MESSAGES.get(reason or "", _UPSTREAM_INVALID_REQUEST),
+        )
     if isinstance(error, (APIError, StreamError, httpx.HTTPError)):
         return 502, "api_error", "Upstream service request failed"
     return 500, "api_error", "Internal server error"

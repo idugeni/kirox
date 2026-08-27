@@ -526,6 +526,22 @@ def test_anthropic_unsupported_semantics_are_field_specific(
             502,
             "Upstream service request failed",
         ),
+        (
+            APIError("secret upstream body", 400, {"reason": "INVALID_MODEL_ID"}),
+            400,
+            "The requested model is not available for this account",
+        ),
+        (
+            APIError("secret upstream body", 400, {"reason": "SOMETHING_NEW"}),
+            400,
+            "Upstream rejected the request as invalid",
+        ),
+        (
+            APIError("secret upstream body", 400, "plain text body"),
+            400,
+            "Upstream rejected the request as invalid",
+        ),
+        (APIError("secret upstream body", 400), 400, "Upstream rejected the request as invalid"),
         (RuntimeError("secret internal detail"), 500, "Internal server error"),
     ],
 )
@@ -544,6 +560,51 @@ def test_openai_runtime_errors_are_sanitized(
     rendered = response.get_data(as_text=True)
     assert "secret" not in rendered
     assert response.get_json()["error"]["message"] == message
+
+
+def test_unavailable_model_is_a_client_error_not_a_gateway_failure(
+    client: FlaskClient, fake_client: FakeAssistantClient
+) -> None:
+    # An upstream INVALID_MODEL_ID is the caller's model choice, so reporting it
+    # as 502 would blame the gateway for a request the caller can correct.
+    fake_client.simple_error = APIError("Error 400", 400, {"reason": "INVALID_MODEL_ID"})
+
+    anthropic = client.post("/v1/messages", json=anthropic_payload())
+    native = client.post("/api/chat", json={"message": "Hello"})
+
+    assert anthropic.status_code == 400
+    assert anthropic.get_json() == {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "The requested model is not available for this account",
+        },
+    }
+    assert native.status_code == 400
+    assert native.get_json() == {"error": "The requested model is not available for this account"}
+
+
+def test_unavailable_model_streams_a_terminal_client_error(
+    app: Flask, fake_client: FakeAssistantClient
+) -> None:
+    fake_client.stream = TrackingEvents(
+        [], error=APIError("Error 400", 400, {"reason": "INVALID_MODEL_ID"})
+    )
+
+    response = dispatch_stream(app, "/v1/chat/completions", openai_payload(stream=True))
+    stream = read_stream(response)
+
+    assert response.status_code == 200
+    errors = [payload for payload in openai_stream_payloads(stream) if "error" in payload]
+    assert errors == [
+        {
+            "error": {
+                "type": "invalid_request_error",
+                "message": "The requested model is not available for this account",
+            }
+        }
+    ]
+    assert stream.count("data: [DONE]") == 1
 
 
 def test_anthropic_and_native_errors_keep_compatible_envelopes_but_hide_details(

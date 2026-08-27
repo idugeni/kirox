@@ -107,6 +107,8 @@ GET /v1/models
 }
 ```
 
+The catalog is requested from the upstream management plane with origin `IDE`. That origin returns exactly the models the runtime will serve for a given credential, so every listed model is callable. Editor-class origins such as `AI_EDITOR` advertise a larger catalog whose newest entries the runtime then rejects with `INVALID_MODEL_ID`, which is why Kirox does not use them. The catalog therefore reflects the account's actual entitlement rather than the full product line-up, and it can differ between accounts.
+
 ### Chat completion
 
 ```http
@@ -206,6 +208,7 @@ Every request is checked before routing:
 Validation errors are HTTP 400 with provider-appropriate envelopes and fields including `type`, `message`, `param`, and `code`. Runtime errors are sanitized:
 
 - Authentication failures: HTTP 401, `Authentication required`
+- Upstream request rejections (HTTP 400): HTTP 400, `invalid_request_error`. A known upstream `reason` code is translated into an actionable message — `INVALID_MODEL_ID` becomes `The requested model is not available for this account` — and anything unrecognized falls back to `Upstream rejected the request as invalid`. Upstream wording is never forwarded.
 - Upstream API/EventStream/httpx failures: HTTP 502, `Upstream service request failed`
 - Unexpected internal failures: HTTP 500, `Internal server error`
 - Oversized bodies: HTTP 413, `Request body exceeds 1 MiB limit`
