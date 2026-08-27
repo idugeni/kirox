@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import httpx
+import pytest
 
 import kirox.cli as cli
 import kirox.service.daemon as daemon_module
@@ -54,9 +55,69 @@ def test_run_with_no_tray():
     assert args.no_tray is True and args.no_update is True
 
 
+def test_bare_invocation_matches_explicit_run_defaults():
+    bare = vars(cli.create_parser().parse_args([]))
+    explicit = vars(cli.create_parser().parse_args(["run"]))
+
+    assert bare == explicit
+    assert bare["command"] == "run"
+    for name, default in cli.RUN_DEFAULTS.items():
+        assert bare[name] is default
+
+
 def test_stop_force_flag_is_additive():
     args = cli.create_parser().parse_args(["stop", "--force"])
     assert args.command == "stop" and args.force is True
+
+
+@pytest.mark.parametrize(
+    ("candidate", "current", "expected"),
+    [
+        ("1.2.0", "1.1.0", True),
+        ("1.1.0", "1.2.0", False),
+        ("1.2.0", "1.2.0", False),
+        ("1.2.1", "1.2.0", True),
+        ("1.10.0", "1.9.0", True),
+        ("2.0", "1.99.99", True),
+        ("1.2", "1.2.0", False),
+        ("1.2.0.1", "1.2.0", True),
+        ("1.2.0+local", "1.2.0", False),
+        ("not-a-version", "1.2.0", False),
+        ("1.2.0", "not-a-version", False),
+    ],
+)
+def test_is_newer_version(candidate, current, expected):
+    assert cli._is_newer_version(candidate, current) is expected
+
+
+def test_check_update_ignores_an_index_behind_the_installed_build(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_should_check_update", lambda: True)
+    monkeypatch.setattr(cli, "_update_cache", lambda: None)
+    monkeypatch.setattr(cli, "_get_latest_version", lambda: "1.0.0")
+    monkeypatch.setattr(cli, "__version__", "1.2.0")
+
+    assert cli._check_update() is None
+    assert "Update available" not in capsys.readouterr().out
+
+
+def test_check_update_reports_a_newer_index_version(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_should_check_update", lambda: True)
+    monkeypatch.setattr(cli, "_update_cache", lambda: None)
+    monkeypatch.setattr(cli, "_get_latest_version", lambda: "1.3.0")
+    monkeypatch.setattr(cli, "__version__", "1.2.0")
+
+    assert cli._check_update() == "1.3.0"
+    assert "Update available: 1.2.0 -> 1.3.0" in capsys.readouterr().out
+
+
+def test_check_update_stays_silent_when_asked(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_should_check_update", lambda: True)
+    monkeypatch.setattr(cli, "_update_cache", lambda: None)
+    monkeypatch.setattr(cli, "_get_latest_version", lambda: "1.3.0")
+    monkeypatch.setattr(cli, "__version__", "1.2.0")
+
+    assert cli._check_update(silent=True) == "1.3.0"
+    assert capsys.readouterr().out == ""
 
 
 def test_status_reads_state_and_api_token_status(monkeypatch, capsys):

@@ -13,6 +13,7 @@ from typing import Any, cast
 import pytest
 
 import kirox.mcp.server as mcp_server
+from kirox._version import __version__
 from kirox.core.client import AssistantClient
 
 
@@ -180,7 +181,7 @@ def test_stdio_runtime_uses_one_server_and_client_then_closes(
     assert len(FakeServer.instances) == 1
     server = FakeServer.instances[0]
     assert server.name == "kirox"
-    assert server.version == "1.1.0"
+    assert server.version == __version__
     assert server.run_calls == 1
     assert server.result[0].text == "answer"
     assert fake.chat_calls == [("hello", "auto")]
@@ -194,7 +195,7 @@ def test_actual_mcp_sdk_registers_tool_and_closes_injected_client() -> None:
     options = server.create_initialization_options()
 
     assert options.server_name == "kirox"
-    assert options.server_version == "1.1.0"
+    assert options.server_version == __version__
     assert options.capabilities.tools is not None
 
     async def enter_lifespan() -> None:

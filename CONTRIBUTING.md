@@ -32,7 +32,7 @@ python -m build
 python scripts/verify_distribution.py
 ```
 
-Branch coverage must remain at least 80%. Both type checkers are required: they disagree often enough that each one catches errors the other misses. Pyrefly reads its `[tool.pyrefly]` section in `pyproject.toml`; without that section it would fall back to the `basic` preset and silence most type errors. The distribution verifier checks the wheel version, `kirox/py.typed`, `kirox` and `kirox-mcp` entry points, then performs a clean temporary-environment install/import/CLI/missing-extra smoke test and `pip check`.
+Branch coverage must remain at least 85%. Both type checkers are required: they disagree often enough that each one catches errors the other misses. Pyrefly reads its `[tool.pyrefly]` section in `pyproject.toml`; without that section it would fall back to the `basic` preset and silence most type errors. The distribution verifier checks the wheel version, `kirox/py.typed`, `kirox` and `kirox-mcp` entry points, then performs a clean temporary-environment install/import/CLI/missing-extra smoke test and `pip check`.
 
 CI runs the same gates on Windows and Ubuntu with Python 3.10, 3.11, 3.12, 3.13, and 3.14. A separate job installs the built wheel with the optional `service` extra and runs a headless tray-import and `pip check` smoke test, so the tray dependencies are exercised without requiring a desktop session in the main matrix. A local Python version outside that matrix is useful but does not replace supported-version CI.
 

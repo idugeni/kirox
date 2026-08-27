@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import math
 import os
@@ -15,25 +14,13 @@ from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
 from kirox.service.process_identity import ProcessIdentity
+from kirox.utils.net import is_loopback_host
 
 DEFAULT_STATE_PATH = Path.home() / ".kirox" / "service.json"
 _LEGACY_STATE_KEYS = frozenset({"pid", "url", "started_at", "control_token"})
 _STATE_KEYS = _LEGACY_STATE_KEYS | {"schema_version", "process_identity"}
 _STATE_SCHEMA_VERSION = 2
 _STATE_LOCK = threading.RLock()
-
-
-def _is_loopback(host: str) -> bool:
-    normalized = host.strip("[]").split("%", 1)[0].lower()
-    if normalized == "localhost":
-        return True
-    try:
-        address = ipaddress.ip_address(normalized)
-    except ValueError:
-        return False
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    return address.is_loopback
 
 
 def _validate_url(url: object) -> str:
@@ -47,7 +34,7 @@ def _validate_url(url: object) -> str:
     if (
         parsed.scheme != "http"
         or parsed.hostname is None
-        or not _is_loopback(parsed.hostname)
+        or not is_loopback_host(parsed.hostname)
         or port is None
         or port <= 0
         or parsed.username is not None

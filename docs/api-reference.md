@@ -39,12 +39,24 @@ with AssistantClient.auto() as client:
 | `/` | GET | Service metadata and route families |
 | `/api/models` | GET | Native compact model list |
 | `/api/chat` | POST | Native text request; model defaults to `auto` |
-| `/api/token/status` | GET | Authentication/profile booleans |
+| `/api/token/status` | GET | Authentication/profile booleans and the credential source label |
 | `/v1/models` | GET | OpenAI-style model list |
 | `/v1/chat/completions` | POST | OpenAI-style text chat, buffered or SSE |
 | `/v1/messages` | POST | Anthropic-style text messages, buffered or SSE |
 
 The internal shutdown route is not a public API. It requires loopback, a per-process control token, and managed service ownership.
+
+### Token status
+
+```http
+GET /api/token/status
+```
+
+```json
+{"authenticated": true, "has_profile": true, "source": "cli-db:fixed"}
+```
+
+`source` names the resolution tier that produced the active credential — `explicit`, `config`, `environment:KIROX`, `environment:ASSISTANT`, `cli-db:configured`, `cli-db:fixed`, or `unknown`. It is a provenance label for debugging which credential Kirox picked; no token or profile value is returned.
 
 ## Shared text-only contract
 

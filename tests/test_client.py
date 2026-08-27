@@ -17,10 +17,13 @@ from kirox.core.models import ToolSpec
 
 
 def event_message(event_type: str, body_data: dict[str, Any]) -> bytes:
+    return raw_event_message(event_type, json.dumps(body_data).encode())
+
+
+def raw_event_message(event_type: str, body: bytes) -> bytes:
     name = b":event-type"
     value = event_type.encode()
     headers = bytes([len(name)]) + name + b"\x07" + struct.pack(">H", len(value)) + value
-    body = json.dumps(body_data).encode()
     total_length = 16 + len(headers) + len(body)
     prelude = struct.pack(">II", total_length, len(headers))
     prelude += struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF)
@@ -510,4 +513,100 @@ def test_chat_terminal_event_finalizes_trailing_bytes_and_closes() -> None:
         list(client.chat("hello"))
 
     assert stream.closed
+    client.close()
+
+
+def test_chat_maps_corrupt_upstream_json_to_stream_error() -> None:
+    stream = TrackingStream([raw_event_message("assistantResponseEvent", b"{oops")])
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    )
+    client = AssistantClient(
+        auth=AuthManager(token="token"),
+        runtime_url="https://runtime.test",
+        http_client=http_client,
+    )
+
+    with pytest.raises(StreamError, match="not valid JSON"):
+        list(client.chat("hello"))
+
+    assert stream.closed
+    client.close()
+
+
+def test_chat_rejects_a_non_object_event_body() -> None:
+    stream = TrackingStream([raw_event_message("assistantResponseEvent", b'["not", "json"]')])
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    )
+    client = AssistantClient(
+        auth=AuthManager(token="token"),
+        runtime_url="https://runtime.test",
+        http_client=http_client,
+    )
+
+    with pytest.raises(StreamError, match="must be a JSON object"):
+        list(client.chat("hello"))
+
+    assert stream.closed
+    client.close()
+
+
+def test_chat_rejects_non_string_assistant_content() -> None:
+    stream = TrackingStream([event_message("assistantResponseEvent", {"content": {"nested": 1}})])
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    )
+    client = AssistantClient(
+        auth=AuthManager(token="token"),
+        runtime_url="https://runtime.test",
+        http_client=http_client,
+    )
+
+    with pytest.raises(StreamError, match="content must be a string"):
+        list(client.chat("hello"))
+
+    assert stream.closed
+    client.close()
+
+
+def test_chat_ignores_a_non_string_model_id() -> None:
+    stream = TrackingStream(
+        [
+            event_message("assistantResponseEvent", {"content": "ok", "modelId": 7}),
+            assistant_message(None),
+        ]
+    )
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    )
+    client = AssistantClient(
+        auth=AuthManager(token="token"),
+        runtime_url="https://runtime.test",
+        http_client=http_client,
+    )
+
+    events = list(client.chat("hello"))
+
+    assert events[0].content == "ok"
+    assert events[0].model_id is None
+    assert stream.closed
+    client.close()
+
+
+def test_public_profile_arn_is_used_for_upstream_requests() -> None:
+    auth = AuthManager(token="token", profile_arn="arn:test", source="explicit")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"models": []})
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = AssistantClient(auth=auth, http_client=http_client)
+
+    assert auth.profile_arn == "arn:test"
+    assert auth.source == "explicit"
+    assert client.list_models() == []
+    assert json.loads(requests[0].content)["profileArn"] == "arn:test"
     client.close()

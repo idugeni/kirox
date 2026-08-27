@@ -10,9 +10,15 @@ from typing import Any, Generator, Optional
 import httpx
 
 from kirox.core.auth import AuthManager
-from kirox.core.errors import APIError, AuthenticationError
+from kirox.core.errors import APIError, AuthenticationError, StreamError
 from kirox.core.eventstream import EventStreamDecoder
 from kirox.core.models import ModelInfo, StreamEvent, ToolSpec
+
+
+def _optional_model_id(event_data: dict[str, Any]) -> Optional[str]:
+    """Read `modelId` only when upstream sends it as a string."""
+    model_id = event_data.get("modelId")
+    return model_id if isinstance(model_id, str) else None
 
 
 def _is_complete_tool_payload(tool: dict[str, Any]) -> bool:
@@ -114,29 +120,32 @@ class AssistantClient:
                 **self.auth.get_headers(),
                 "x-amz-target": "KiroControlPlaneBearerService.ListAvailableModels",
             },
-            json={"origin": "AI_EDITOR", "profileArn": self.auth._profile_arn},
+            json={"origin": "AI_EDITOR", "profileArn": self.auth.profile_arn},
         )
-        if response.status_code != 200:
-            raise APIError(f"Error {response.status_code}", response.status_code)
         try:
-            payload: Any = response.json()
-        except ValueError as exc:
-            raise APIError("Invalid models response", 200, response.text) from exc
-        if not isinstance(payload, dict):
-            raise APIError("Invalid models response", 200, payload)
-        models = payload.get("models", [])
-        if not isinstance(models, list) or not all(isinstance(model, dict) for model in models):
-            raise APIError("Invalid models response models", 200, payload)
-        try:
-            return [ModelInfo.from_api(model) for model in models]
-        except ValueError as exc:
-            raise APIError("Invalid model specification", 200, payload) from exc
+            if response.status_code != 200:
+                raise APIError(f"Error {response.status_code}", response.status_code)
+            try:
+                payload: Any = response.json()
+            except ValueError as exc:
+                raise APIError("Invalid models response", 200, response.text) from exc
+            if not isinstance(payload, dict):
+                raise APIError("Invalid models response", 200, payload)
+            models = payload.get("models", [])
+            if not isinstance(models, list) or not all(isinstance(model, dict) for model in models):
+                raise APIError("Invalid models response models", 200, payload)
+            try:
+                return [ModelInfo.from_api(model) for model in models]
+            except ValueError as exc:
+                raise APIError("Invalid model specification", 200, payload) from exc
+        finally:
+            response.close()
 
     def list_tools(self) -> list[ToolSpec]:
         body = {
             "id": "tools_list",
             "method": "tools/list",
-            "profileArn": self.auth._profile_arn,
+            "profileArn": self.auth.profile_arn,
             "jsonrpc": "2.0",
             "params": {"includeHidden": True},
         }
@@ -203,7 +212,7 @@ class AssistantClient:
         ]
         conversation_id = f"conv_{uuid.uuid4()}"
         body = {
-            "profileArn": auth._profile_arn,
+            "profileArn": auth.profile_arn,
             "conversationState": {
                 "currentMessage": {
                     "userInputMessage": {
@@ -233,7 +242,7 @@ class AssistantClient:
 
             for chunk in response.iter_bytes():
                 for message_frame in decoder.feed(chunk):
-                    event_data = message_frame.body_json()
+                    event_data = message_frame.body_object()
                     if message_frame.event_type != "assistantResponseEvent":
                         yield StreamEvent(
                             event_type=message_frame.event_type,
@@ -244,10 +253,13 @@ class AssistantClient:
                         decoder.finalize()
                         terminal = True
                         break
+                    content = event_data["content"]
+                    if not isinstance(content, str):
+                        raise StreamError("EventStream assistant content must be a string")
                     yield StreamEvent(
                         event_type="content",
-                        content=event_data["content"],
-                        model_id=event_data.get("modelId"),
+                        content=content,
+                        model_id=_optional_model_id(event_data),
                     )
                 if terminal:
                     break

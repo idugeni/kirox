@@ -31,7 +31,7 @@ The MCP dependency is optional and imported only by MCP operations. Running `kir
 4. Backward-compatible `ASSISTANT_TOKEN` / `ASSISTANT_PROFILE_ARN` aliases
 5. An explicitly configured database, then fixed supported CLI database locations
 
-`KIROX_DB_PATH` and `ASSISTANT_DB_PATH` can select a database. Kirox does not scan arbitrary files or treat unrelated keys such as `OPENAI_API_KEY` as upstream credentials.
+`KIROX_DB_PATH` and `ASSISTANT_DB_PATH` can select a database. Kirox does not scan arbitrary files or treat unrelated keys such as `OPENAI_API_KEY` as upstream credentials. A secret whose name marks it as a refresh token is never used as a bearer token, whatever its value looks like.
 
 ## CLI and managed lifecycle
 
@@ -118,7 +118,7 @@ The default file is `~/.kirox/config.json`:
 }
 ```
 
-Only loopback values are accepted for `server_host`. See [Configuration](docs/configuration.md) for all fields and environment aliases.
+Only loopback values are accepted for `server_host`. Every field is validated on load, so an invalid value raises `ConfigError` naming the field instead of failing later during startup. `KIROX_CONFIG` selects a different file, and `KIROX_TOKEN`, `KIROX_PROFILE_ARN`, `KIROX_REGION`, `KIROX_SERVER_HOST`, `KIROX_SERVER_PORT`, `KIROX_LOG_LEVEL`, and `KIROX_LOG_FILE` overlay individual fields. See [Configuration](docs/configuration.md) for all fields and environment aliases.
 
 ## Development and release gates
 
@@ -133,7 +133,7 @@ python -m build
 python scripts/verify_distribution.py
 ```
 
-Coverage is branch-aware and must remain at least 80%. Both type checkers run because they catch different classes of error; Pyrefly is configured explicitly in `pyproject.toml` so it does not silently fall back to its permissive `basic` preset. The distribution verifier checks `py.typed`, version metadata, both console scripts, then installs the wheel into a temporary clean virtual environment for import, CLI, missing-MCP, and `pip check` smoke tests.
+Coverage is branch-aware and must remain at least 85%. Both type checkers run because they catch different classes of error; Pyrefly is configured explicitly in `pyproject.toml` so it does not silently fall back to its permissive `basic` preset. The distribution verifier checks `py.typed`, version metadata, both console scripts, then installs the wheel into a temporary clean virtual environment for import, CLI, missing-MCP, and `pip check` smoke tests.
 
 ## Documentation
 

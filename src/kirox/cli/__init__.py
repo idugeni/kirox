@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -19,6 +20,7 @@ UPDATE_CHECK_INTERVAL = 3600
 UPDATE_CACHE_FILE = Path.home() / ".kirox" / ".update_cache"
 STOP_TIMEOUT = 5.0
 STOP_POLL_INTERVAL = 0.1
+RUN_DEFAULTS = {"no_tray": False, "no_update": False, "verbose": False}
 
 
 def _get_latest_version() -> Optional[str]:
@@ -41,7 +43,7 @@ def _should_check_update() -> bool:
     if not UPDATE_CACHE_FILE.exists():
         return True
     try:
-        last_check = float(UPDATE_CACHE_FILE.read_text().strip())
+        last_check = float(UPDATE_CACHE_FILE.read_text(encoding="utf-8").strip())
         return (time.time() - last_check) > UPDATE_CHECK_INTERVAL
     except Exception:
         return True
@@ -49,7 +51,34 @@ def _should_check_update() -> bool:
 
 def _update_cache() -> None:
     UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    UPDATE_CACHE_FILE.write_text(str(time.time()))
+    UPDATE_CACHE_FILE.write_text(str(time.time()), encoding="utf-8")
+
+
+def _release_segment(value: str) -> Optional[tuple[int, ...]]:
+    head = value.strip().split("+", 1)[0]
+    match = re.match(r"\d+(?:\.\d+)*", head)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.group().split("."))
+
+
+def _is_newer_version(candidate: str, current: str) -> bool:
+    """Report whether ``candidate`` is a later release than ``current``.
+
+    Only the numeric release segment is compared, so an index that is behind
+    the installed build is never offered as an update. A version neither side
+    can parse is treated as not newer rather than guessed at. Two versions
+    sharing a release segment but differing in a pre-release or dev suffix
+    compare equal; Kirox publishes plain releases, and the release gate ties
+    the tag to ``_version.py``, so that case does not occur in a published
+    artifact.
+    """
+    left = _release_segment(candidate)
+    right = _release_segment(current)
+    if left is None or right is None:
+        return False
+    width = max(len(left), len(right))
+    return left + (0,) * (width - len(left)) > right + (0,) * (width - len(right))
 
 
 def _check_update(silent: bool = False) -> Optional[str]:
@@ -57,7 +86,7 @@ def _check_update(silent: bool = False) -> Optional[str]:
         return None
     latest = _get_latest_version()
     _update_cache()
-    if latest and latest != __version__:
+    if latest and _is_newer_version(latest, __version__):
         if not silent:
             print(f"\n  Update available: {__version__} -> {latest}")
             print("  Run: pip install --upgrade kirox\n")
@@ -344,6 +373,9 @@ def create_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--no-tray", action="store_true")
     run_parser.add_argument("--no-update", action="store_true")
     run_parser.add_argument("-v", "--verbose", action="store_true")
+    # A bare `kirox` invocation runs the service, so the top-level parser carries
+    # the same defaults as `kirox run` instead of `main()` reconstructing them.
+    parser.set_defaults(command="run", **RUN_DEFAULTS)
     subparsers.add_parser("status", help="Check status")
     stop_parser = subparsers.add_parser("stop", help="Stop service")
     stop_parser.add_argument("--force", action="store_true")
@@ -360,11 +392,6 @@ def create_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> Optional[int]:
     args = create_parser().parse_args(argv)
-    if not args.command:
-        args.command = "run"
-        args.no_tray = False
-        args.no_update = False
-        args.verbose = False
     commands = {
         "run": cmd_run,
         "status": cmd_status,

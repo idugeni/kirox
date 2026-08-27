@@ -2,7 +2,7 @@
 
 ## Configuration file
 
-Kirox loads JSON from `~/.kirox/config.json` by default.
+Kirox loads JSON from `~/.kirox/config.json` by default, or from `KIROX_CONFIG` when that variable is set.
 
 ```json
 {
@@ -21,18 +21,26 @@ Kirox loads JSON from `~/.kirox/config.json` by default.
 
 | Option | Type | Default | Contract |
 |---|---:|---:|---|
-| `region` | string | `us-east-1` | Upstream runtime/management region |
+| `region` | string | `us-east-1` | Upstream runtime/management region; non-empty |
 | `server_host` | string | `127.0.0.1` | Must resolve syntactically to loopback (`127.0.0.0/8`, `::1`, or `localhost`) |
 | `server_port` | integer | `8420` | `0` chooses an ephemeral port; otherwise `1`–`65535` |
 | `auto_refresh` | boolean | `true` | Enable periodic credential health checks |
-| `refresh_interval` | integer | `3000` | Seconds between checks; waits are interruptible |
-| `log_level` | string | `INFO` | Python logging level |
+| `refresh_interval` | integer | `3000` | Positive seconds between checks; waits are interruptible |
+| `log_level` | string | `INFO` | `CRITICAL`, `ERROR`, `WARNING`, `INFO`, `DEBUG`, or `NOTSET`; the legacy aliases `WARN` and `FATAL` are accepted and normalized, and case is normalized |
 | `log_file` | string/null | `null` | Optional expanded path used by service/CLI logging |
 | `token` | string/null | `null` | Configured bearer token |
 | `profile_arn` | string/null | `null` | Optional configured profile ARN |
 | `db_path` | string/null | `null` | Explicit supported CLI SQLite database |
 
 A non-loopback `server_host`, including `0.0.0.0`, is rejected. Kirox is intentionally local-only; there is no supported public-bind mode.
+
+## Validation and persistence
+
+Every value is validated when a `Config` is constructed, loaded from a file, or overlaid from the environment. A violation raises `ConfigError`, a `ValueError` subclass that names the offending field in both its message and its `field_name` attribute, so a bad config fails at load time instead of surfacing later as an obscure bind or logging failure. A malformed or non-UTF-8 file is reported the same way with `field_name` `"body"`, so `except ConfigError` covers every load failure. Unknown keys are ignored so a newer config file stays loadable by an older Kirox.
+
+An empty or whitespace-only string in the file is a validation error rather than a silent no-op, because in a file it is almost always a mistake. Environment overlays keep the older behavior: an empty variable overlays nothing. String fields are stripped, so a padded `region` cannot produce a malformed upstream URL.
+
+Files are read and written as UTF-8 regardless of platform locale. `Config.to_file()` writes to a temporary file in the same directory, requests owner-only permissions where the platform supports them, and then replaces the target in one step, so an interrupted write cannot leave a truncated configuration and a persisted `token` is not left group- or world-readable. Two consequences are worth knowing: replacing the file resets its permissions, so permissions set by hand do not survive a write, and a write interrupted by a process kill can leave a private temporary sibling, which the next write removes. On Windows `os.chmod` cannot express owner-only access, so the written file inherits directory ACLs.
 
 ## Deterministic authentication precedence
 
@@ -58,14 +66,21 @@ The client factory methods have narrower intentional scopes:
 
 | Variable | Purpose |
 |---|---|
+| `KIROX_CONFIG` | Override the configuration file path |
 | `KIROX_TOKEN` | Preferred bearer token; also overlays the loaded config |
 | `KIROX_PROFILE_ARN` | Preferred profile ARN; also overlays the loaded config |
 | `KIROX_REGION` | Overlays the configured region |
+| `KIROX_SERVER_HOST` | Overlays the configured loopback bind host |
+| `KIROX_SERVER_PORT` | Overlays the configured port; must be an integer in range |
+| `KIROX_LOG_LEVEL` | Overlays the configured log level |
+| `KIROX_LOG_FILE` | Overlays the configured log file path |
 | `KIROX_DB_PATH` | Preferred explicit CLI database path |
 | `KIROX_STATE_FILE` | Override the managed service state path |
 | `ASSISTANT_TOKEN` | Backward-compatible token alias |
 | `ASSISTANT_PROFILE_ARN` | Backward-compatible profile alias |
 | `ASSISTANT_DB_PATH` | Backward-compatible database alias |
+
+An empty or whitespace-only value does not overlay anything, and every overlaid value goes through the same validation as a file value.
 
 `OPENAI_API_KEY` is intentionally ignored for upstream authentication. Downstream OpenAI-compatible clients may still require any placeholder value in their own configuration; Kirox does not consume it.
 

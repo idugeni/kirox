@@ -27,11 +27,13 @@ from kirox.service._http_adapter import (
     parse_openai_request,
 )
 from kirox.utils.config import Config
+from kirox.utils.net import is_loopback_host
 
 logger = logging.getLogger(__name__)
 
 CONTROL_SHUTDOWN_PATH = "/_kirox/shutdown"
 CONTROL_TOKEN_HEADER = "X-Kirox-Control-Token"
+APP_CLIENT_CLOSER = "kirox_close_owned_client"
 _MAX_JSON_CONTENT_LENGTH = 1024 * 1024
 _SSE_HEADERS = {
     "Cache-Control": "no-cache, no-transform",
@@ -39,19 +41,6 @@ _SSE_HEADERS = {
 }
 
 Provider = Literal["openai", "anthropic"]
-
-
-def _is_loopback_address(host: str) -> bool:
-    normalized = host.strip("[]").split("%", 1)[0].lower()
-    if normalized == "localhost":
-        return True
-    try:
-        address = ipaddress.ip_address(normalized)
-    except ValueError:
-        return False
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    return address.is_loopback
 
 
 def _parse_host_header(value: str) -> str | None:
@@ -94,7 +83,7 @@ def _parse_host_header(value: str) -> str | None:
         port = int(port_text)
         if not 1 <= port <= 65535:
             return None
-    return host if _is_loopback_address(host) else None
+    return host if is_loopback_host(host) else None
 
 
 def _format_url(host: str, port: int) -> str:
@@ -107,7 +96,7 @@ class ManagedHTTPServer:
     """A bound Werkzeug server with explicit, idempotent thread ownership."""
 
     def __init__(self, app: Flask, *, host: str, port: int) -> None:
-        if not _is_loopback_address(host):
+        if not is_loopback_host(host):
             raise ValueError("Kirox HTTP server must bind to a loopback address")
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Kirox HTTP server port must be between 0 and 65535")
@@ -408,6 +397,8 @@ def create_app(
     app.config["CONFIG"] = config or Config()
     app.config["MAX_CONTENT_LENGTH"] = _MAX_JSON_CONTENT_LENGTH
     shared_client = client
+    owns_client = False
+    closed = False
     client_lock = threading.Lock()
 
     @app.before_request
@@ -432,20 +423,40 @@ def create_app(
         return jsonify({"error": message}), 413
 
     def get_client() -> AssistantClient:
-        nonlocal shared_client
-        if shared_client is not None:
-            return shared_client
+        nonlocal shared_client, owns_client
         with client_lock:
+            if closed:
+                raise RuntimeError("Kirox HTTP application client is closed")
             if shared_client is None:
-                cfg = app.config["CONFIG"]
-                if cfg.token:
-                    from kirox.core.auth import AuthManager
+                from kirox.core.auth import AuthManager
 
-                    auth = AuthManager(token=cfg.token, profile_arn=cfg.profile_arn)
-                    shared_client = AssistantClient(auth=auth, region=cfg.region)
-                else:
-                    shared_client = AssistantClient.from_cli_db(cfg.db_path, cfg.region)
+                cfg = app.config["CONFIG"]
+                # resolve() owns the documented precedence, including treating a
+                # config token that duplicates KIROX_TOKEN as environment
+                # provenance, so the reported source cannot misattribute it.
+                auth = AuthManager.resolve(config=cfg)
+                shared_client = AssistantClient(auth=auth, region=cfg.region)
+                owns_client = True
             return shared_client
+
+    def close_owned_client() -> None:
+        """Close only a client this app created itself, once and for good.
+
+        An injected client belongs to the managed service, which closes it as
+        part of its own shutdown ordering.
+        """
+        nonlocal shared_client, owns_client, closed
+        with client_lock:
+            closed = True
+            if not owns_client or shared_client is None:
+                return
+            closing, shared_client, owns_client = shared_client, None, False
+        try:
+            closing.close()
+        except Exception:
+            logger.warning("Failed to close app-owned Kirox client", exc_info=True)
+
+    app.extensions[APP_CLIENT_CLOSER] = close_owned_client
 
     # ── Health & Info ──────────────────────────────────────────────
     @app.route("/health", methods=["GET"])
@@ -471,7 +482,7 @@ def create_app(
         if shutdown_callback is None or not control_token:
             return jsonify({"error": "not found"}), 404
         remote_address = request.remote_addr or ""
-        if not _is_loopback_address(remote_address):
+        if not is_loopback_host(remote_address):
             return jsonify({"error": "forbidden"}), 403
         supplied_token = request.headers.get(CONTROL_TOKEN_HEADER, "")
         if not secrets.compare_digest(
@@ -520,7 +531,8 @@ def create_app(
             auth = active_client.auth
             payload = {
                 "authenticated": auth.is_authenticated,
-                "has_profile": auth._profile_arn is not None,
+                "has_profile": auth.profile_arn is not None,
+                "source": auth.source,
             }
         except Exception as error:
             return _native_runtime_error(error)
@@ -625,6 +637,13 @@ def create_app(
     return app
 
 
+def close_app_owned_client(app: Flask) -> None:
+    """Close the client an app created lazily, if it created one."""
+    closer = app.extensions.get(APP_CLIENT_CLOSER)
+    if callable(closer):
+        closer()
+
+
 def run_server(config: Optional[Config] = None) -> None:
     """Run the legacy blocking server entry point with managed socket cleanup."""
     cfg = config or Config()
@@ -637,3 +656,4 @@ def run_server(config: Optional[Config] = None) -> None:
         pass
     finally:
         server.stop()
+        close_app_owned_client(app)

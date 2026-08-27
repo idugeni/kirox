@@ -138,3 +138,40 @@ def test_feed_after_finalize_is_rejected() -> None:
 
     with pytest.raises(StreamError, match="already been finalized"):
         decoder.feed(b"")
+
+
+def test_body_json_reports_corruption_as_a_stream_error() -> None:
+    message = list(parse_eventstream(create_test_message(b"event-type", b"test", b"{oops")))[0]
+
+    with pytest.raises(StreamError, match="test body is not valid JSON"):
+        message.body_json()
+
+
+def test_body_json_reports_invalid_utf8_as_a_stream_error() -> None:
+    message = list(parse_eventstream(create_test_message(b"event-type", b"test", b'"\xff"')))[0]
+
+    with pytest.raises(StreamError, match="not valid JSON"):
+        message.body_json()
+
+
+@pytest.mark.parametrize("body", [b"[]", b'"text"', b"7", b"null"])
+def test_body_object_rejects_non_object_payloads(body: bytes) -> None:
+    message = list(parse_eventstream(create_test_message(b"event-type", b"test", body)))[0]
+
+    assert message.body_json() is not Ellipsis
+    with pytest.raises(StreamError, match="test body must be a JSON object"):
+        message.body_object()
+
+
+def test_body_object_returns_the_decoded_mapping() -> None:
+    message = list(parse_eventstream(create_test_message(b"event-type", b"test", b'{"a":1}')))[0]
+
+    assert message.body_object() == {"a": 1}
+
+
+def test_unnamed_event_errors_stay_readable() -> None:
+    message = list(parse_eventstream(create_raw_message(b"", b"[]")))[0]
+
+    assert message.event_type == ""
+    with pytest.raises(StreamError, match="EventStream event body must be a JSON object"):
+        message.body_object()

@@ -2,6 +2,43 @@
 
 All notable changes to Kirox are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-27
+
+### Added
+
+- Field-level configuration validation. `Config` now rejects a non-loopback `server_host`, an out-of-range or non-integer `server_port`, a non-positive `refresh_interval`, a non-boolean `auto_refresh`, an unknown `log_level`, and wrong-typed or empty string fields, raising `ConfigError` with the offending field name instead of failing later during service startup. A malformed or non-UTF-8 config file is reported as `ConfigError` too, so `except ConfigError` covers every load failure.
+- `KIROX_CONFIG` selects the configuration file, and `KIROX_SERVER_HOST`, `KIROX_SERVER_PORT`, `KIROX_LOG_LEVEL`, and `KIROX_LOG_FILE` overlay individual fields. Every overlay is validated like a file value, and empty values overlay nothing.
+- `AuthManager.profile_arn` public property, and an optional `source` argument so a credential's provenance is set at construction rather than patched afterwards.
+- `/api/token/status` now reports the credential `source` label, making it possible to see which resolution tier produced the active credential without exposing any secret.
+- `EventStreamMessage.body_object()` for callers that require a JSON object frame body.
+- `kirox.utils.net.is_loopback_host()` as the single implementation of loopback classification, replacing three private copies in the server, state, and configuration layers.
+- Tests for the credential database parsing paths, the service lifecycle (`run`, signal handling, startup rollback, dead-server detection, `main`), configuration validation and persistence, and loopback classification. Branch coverage rose from 84% to 89% and the enforced floor from 80% to 85%.
+
+### Changed
+
+- `Config.to_file()` writes UTF-8 atomically through a temporary file with owner-only permissions requested, so an interrupted write cannot truncate the configuration and a persisted `token` is not left group- or world-readable. Because the file is replaced rather than truncated, permissions set on it by hand do not survive a write, and a write interrupted by a process kill can leave a private temporary sibling that the next write removes. `Config.from_file()` reads UTF-8 explicitly instead of the platform locale encoding.
+- Config string fields are stripped, so a padded `region` can no longer produce a malformed upstream URL. An empty or whitespace-only string in a config file is now a `ConfigError` where it was previously accepted and later treated as absent; environment overlays keep the older behavior of ignoring empty values.
+- `log_level` is restricted to real Python level names. The aliases `WARN` and `FATAL`, which resolved through the previous `getattr(logging, ...)` lookup, are accepted and normalized to `WARNING` and `CRITICAL` rather than rejected.
+- The HTTP application resolves its own lazily created credentials through `AuthManager.resolve(config=...)` instead of branching on `config.token`. The documented precedence, including the rule that a config token duplicating `KIROX_TOKEN` is environment provenance, now applies to that path, so the reported `source` cannot misattribute an environment credential as a config credential. A configured environment token is now preferred over a configured database for this path, matching the documented order.
+- A malformed EventStream frame body is now terminal for `AssistantClient.chat()`. Non-`assistantResponseEvent` frames are still forwarded as `StreamEvent.raw`, but only when their body decodes to a JSON object; a non-object body ends the stream instead of being passed through as a value the field is not declared to hold, and content already yielded before the bad frame is not retained by `chat_simple()`.
+- The default configuration path is resolved per call again rather than at import, so a process that changes its home directory before loading sees the new location. `default_config_path()` and `get_config_path()` expose that resolution.
+- A bare `kirox` invocation now takes its defaults from the `run` subparser through `set_defaults`, so adding a `run` flag can no longer leave the implicit form missing an attribute.
+- The CLI update-check cache is read and written as UTF-8.
+- `AssistantClient.list_models()` now releases its response on every path, matching `list_tools()`. This is consistency rather than a leak fix: a non-streaming `httpx` response has already been read.
+
+### Fixed
+
+- A credential secret named as a refresh token is no longer selected as the bearer token when its value carries the access-token prefix. The previous condition let the value heuristic override the refresh-name exclusion, so an `aoa`-prefixed refresh secret could be sent as the `Authorization` token and fail every upstream call with HTTP 401, which the scheduler would then retry against the same wrong secret. A name that also says `access`, such as a refreshable session's access token, stays eligible.
+- Malformed upstream EventStream bodies now raise `StreamError` instead of escaping as `json.JSONDecodeError`, so the HTTP bridge reports upstream corruption as HTTP 502 rather than HTTP 500, and a non-object frame body or a non-string assistant `content` is rejected instead of being stored in fields declared otherwise. A non-string `modelId` is dropped rather than stored.
+- The HTTP application now closes a client it created lazily, and that teardown is terminal: a later request fails instead of silently building a replacement client. `run_server()` previously leaked the `httpx.Client` built on first request; an injected client is still owned and closed by the managed service.
+- `AuthManager._profile_arn` is no longer read from outside the class by the client and HTTP layers.
+- The update check compares release segments instead of testing string inequality, so an index version behind the installed build is no longer announced as an available update. Running `kirox status` on a build newer than PyPI previously printed the older index version under "Update available".
+
+### Known limitations
+
+- On Windows `os.chmod` cannot express owner-only access, so a config file holding a `token` inherits directory ACLs. The atomic replace and the temporary-file sweep still apply.
+- `run_server()` and the managed service both stop the HTTP server before closing the client, and Werkzeug's threaded server does not join request threads. An SSE response still writing at that moment observes a closed client and terminates with a sanitized provider error event rather than a truncated stream.
+
 ## [1.1.0] - 2026-07-31
 
 ### Added

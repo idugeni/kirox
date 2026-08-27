@@ -268,3 +268,247 @@ def test_legacy_environment_and_auto_apis_delegate(
 
     assert bearer_token(AuthManager.from_env()) == "kirox-token"
     assert bearer_token(AuthManager.auto_detect()) == "kirox-token"
+
+
+def create_table(path: Path, table: str, columns: tuple[str, str], rows: list[tuple]) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(f"CREATE TABLE {table} ({columns[0]}, {columns[1]})")
+        connection.executemany(
+            f"INSERT INTO {table} ({columns[0]}, {columns[1]}) VALUES (?, ?)",
+            rows,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_profile_arn_is_public_and_never_reveals_the_token() -> None:
+    auth = AuthManager(token="secret-token", profile_arn="arn:test", source="explicit")
+
+    assert auth.profile_arn == "arn:test"
+    assert auth.source == "explicit"
+    assert AuthManager().profile_arn is None
+    assert AuthManager().source == "unknown"
+    assert "secret-token" not in repr(auth)
+
+
+def test_bytes_columns_are_decoded_and_undecodable_values_ignored(tmp_path: Path) -> None:
+    db_path = tmp_path / "bytes.sqlite3"
+    create_table(
+        tmp_path / "bytes.sqlite3",
+        "auth_kv",
+        ("key", "value"),
+        [
+            ("undecodable_token", b"\xff\xfe not utf-8"),
+            ("access_token", b"aoa-bytes-token"),
+            ("profile", b'{"arn": "arn:bytes"}'),
+        ],
+    )
+
+    auth = AuthManager.from_cli_db(db_path)
+
+    assert auth.get_headers()["Authorization"] == "Bearer aoa-bytes-token"
+    assert auth.profile_arn == "arn:bytes"
+
+
+def test_profile_falls_back_to_the_state_table(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute("CREATE TABLE auth_kv (key, value)")
+        connection.execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?, ?)",
+            ("access_token", "aoa-token"),
+        )
+        connection.execute("CREATE TABLE state (key, value)")
+        connection.executemany(
+            "INSERT INTO state (key, value) VALUES (?, ?)",
+            [
+                (None, "ignored-null-key"),
+                ("unrelated", "ignored"),
+                ("profile", json.dumps({"profileArn": "arn:from-state"})),
+            ],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    auth = AuthManager.from_cli_db(db_path)
+
+    assert auth.profile_arn == "arn:from-state"
+
+
+def test_secrets_table_is_the_last_token_source(tmp_path: Path) -> None:
+    db_path = tmp_path / "secrets.sqlite3"
+    create_table(
+        db_path,
+        "secrets",
+        ("name", "secret"),
+        [
+            ("refresh_token", "aoa-refresh-must-be-skipped"),
+            ("empty", "   "),
+            ("session_token", "plain-session-token"),
+        ],
+    )
+
+    auth = AuthManager.from_cli_db(db_path)
+
+    assert auth.get_headers()["Authorization"] == "Bearer plain-session-token"
+    assert auth.profile_arn is None
+
+
+def test_refresh_named_secret_is_skipped_even_with_an_access_token_prefix(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "aoa-refresh.sqlite3"
+    create_table(
+        db_path,
+        "secrets",
+        ("name", "secret"),
+        [("kiro_refreshToken", "aoa-refresh-value")],
+    )
+
+    with pytest.raises(AuthenticationError, match="No token"):
+        AuthManager.from_cli_db(db_path)
+
+
+def test_access_token_in_a_refreshable_session_stays_eligible(tmp_path: Path) -> None:
+    # The name says `refresh`, but it also says `access`: this is the access
+    # token of a refreshable session, not the refresh token itself.
+    db_path = tmp_path / "refreshable.sqlite3"
+    create_table(
+        db_path,
+        "secrets",
+        ("name", "secret"),
+        [("codewhisperer.refreshableSession.accessToken", "aoa-usable-token")],
+    )
+
+    assert AuthManager.from_cli_db(db_path).get_headers()["Authorization"] == (
+        "Bearer aoa-usable-token"
+    )
+
+
+def test_aoa_prefixed_secret_is_accepted_under_any_name(tmp_path: Path) -> None:
+    db_path = tmp_path / "aoa.sqlite3"
+    create_table(db_path, "secrets", ("name", "secret"), [("opaque", "aoa-prefixed-token")])
+
+    assert AuthManager.from_cli_db(db_path).get_headers()["Authorization"] == (
+        "Bearer aoa-prefixed-token"
+    )
+
+
+def test_refresh_only_secrets_are_not_credentials(tmp_path: Path) -> None:
+    db_path = tmp_path / "refresh.sqlite3"
+    create_table(db_path, "secrets", ("name", "secret"), [("refresh_token", "refresh-only")])
+
+    with pytest.raises(AuthenticationError, match="No token"):
+        AuthManager.from_cli_db(db_path)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("refresh_token", "must-not-be-used"),
+        ("unrelated_key", "not-a-token-column"),
+        ("access_token", "{not valid json"),
+        ("access_token", json.dumps({"unexpected": "shape"})),
+        ("access_token", json.dumps([1, 2, 3])),
+        ("access_token", "   "),
+    ],
+)
+def test_unusable_auth_rows_do_not_produce_a_token(tmp_path: Path, key: str, value: str) -> None:
+    db_path = tmp_path / "unusable.sqlite3"
+    create_table(db_path, "auth_kv", ("key", "value"), [(None, "ignored"), (key, value)])
+
+    with pytest.raises(AuthenticationError, match="No token"):
+        AuthManager.from_cli_db(db_path)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        json.dumps({"unexpected": "shape"}),
+        "{not valid json",
+        json.dumps(["arn:in-a-list"]),
+    ],
+)
+def test_unusable_profile_rows_leave_the_profile_unset(tmp_path: Path, value: str) -> None:
+    db_path = tmp_path / "profile.sqlite3"
+    create_table(
+        db_path,
+        "auth_kv",
+        ("key", "value"),
+        [("access_token", "aoa-token"), ("profile", value)],
+    )
+
+    assert AuthManager.from_cli_db(db_path).profile_arn is None
+
+
+def test_mapping_configuration_is_accepted(tmp_path: Path) -> None:
+    db_path = tmp_path / "mapping.sqlite3"
+    create_auth_db(db_path, "mapping-db-token", "mapping-db-profile")
+
+    from_mapping = AuthManager.resolve(config={"token": "mapping-token"}, environ={})
+    from_mapping_db = AuthManager.resolve(config={"db_path": str(db_path)}, environ={})
+
+    assert bearer_token(from_mapping) == "mapping-token"
+    assert from_mapping.source == "config"
+    assert bearer_token(from_mapping_db) == "mapping-db-token"
+    assert from_mapping_db.source == "cli-db:configured"
+
+
+def test_unreadable_database_directory_is_reported_without_the_path(tmp_path: Path) -> None:
+    directory = tmp_path / "not-a-file.sqlite3"
+    directory.mkdir()
+
+    with pytest.raises(AuthenticationError) as error:
+        AuthManager.from_cli_db(directory)
+
+    assert str(directory) not in str(error.value)
+
+
+def test_fixed_locations_skip_unusable_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "missing.sqlite3"
+    tokenless = tmp_path / "tokenless.sqlite3"
+    sqlite3.connect(tokenless).close()
+    usable = tmp_path / "usable.sqlite3"
+    create_auth_db(usable, "third-candidate-token", "third-candidate-profile")
+    monkeypatch.setattr(
+        AuthManager,
+        "_known_cli_db_paths",
+        staticmethod(lambda: (missing, tokenless, usable)),
+    )
+
+    auth = AuthManager.resolve(environ={})
+
+    assert bearer_token(auth) == "third-candidate-token"
+    assert auth.source == "cli-db:fixed"
+
+
+def test_environment_only_resolution_reports_a_narrow_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("KIROX_TOKEN", "ASSISTANT_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(AuthenticationError, match="No token in environment"):
+        AuthManager.from_env()
+
+
+def test_database_only_resolution_reports_a_narrow_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(AuthManager, "_known_cli_db_paths", staticmethod(lambda: ()))
+
+    with pytest.raises(AuthenticationError, match="No credential-bearing"):
+        AuthManager.from_cli_db()
+
+
+def test_unauthenticated_manager_emits_no_authorization_header() -> None:
+    auth = AuthManager()
+
+    assert auth.is_authenticated is False
+    assert auth.get_headers() == {"Content-Type": "application/x-amz-json-1.0"}

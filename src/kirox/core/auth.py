@@ -36,10 +36,16 @@ def _config_value(config: object | None, key: str) -> object | None:
 class AuthManager:
     """Resolve and manage bearer credentials without secret discovery scans."""
 
-    def __init__(self, token: Optional[str] = None, profile_arn: Optional[str] = None):
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        profile_arn: Optional[str] = None,
+        *,
+        source: str = "unknown",
+    ):
         self._token = token
         self._profile_arn = profile_arn
-        self._source = "unknown"
+        self._source = source
 
     @classmethod
     def resolve(
@@ -155,19 +161,15 @@ class AuthManager:
                 environ=environ if include_environment else {},
             )
             if configured_db_path is not None:
-                auth = cls._read_sqlite(configured_db_path)
-                auth._source = "cli-db:configured"
-                return auth
+                return cls._read_sqlite(configured_db_path, source="cli-db:configured")
 
             for candidate in cls._known_cli_db_paths():
                 if not candidate.is_file():
                     continue
                 try:
-                    auth = cls._read_sqlite(candidate)
+                    return cls._read_sqlite(candidate, source="cli-db:fixed")
                 except AuthenticationError:
                     continue
-                auth._source = "cli-db:fixed"
-                return auth
 
         if include_environment and include_cli_db:
             raise AuthenticationError(
@@ -184,9 +186,7 @@ class AuthManager:
         profile_arn: Optional[str],
         source: str,
     ) -> AuthManager:
-        auth = cls(token=token, profile_arn=profile_arn)
-        auth._source = source
-        return auth
+        return cls(token=token, profile_arn=profile_arn, source=source)
 
     @staticmethod
     def _configured_db_path(
@@ -224,7 +224,7 @@ class AuthManager:
         )
 
     @classmethod
-    def _read_sqlite(cls, db_path: Path) -> AuthManager:
+    def _read_sqlite(cls, db_path: Path, *, source: str = "cli-db") -> AuthManager:
         """Read a token from supported CLI tables without exposing row values."""
         if not db_path.is_file():
             raise AuthenticationError("Credential database not found")
@@ -274,9 +274,16 @@ class AuthManager:
                     secret_string = _nonempty_string(secret)
                     if secret_string is None:
                         continue
-                    if secret_string.startswith("aoa") or (
-                        "token" in name_string.lower() and "refresh" not in name_string.lower()
-                    ):
+                    lowered_name = name_string.lower()
+                    # A refresh token is never a bearer token, and the value
+                    # prefix must not override that: an `aoa`-prefixed refresh
+                    # secret would be sent as the Authorization token and fail
+                    # every upstream call. A name that also says `access`
+                    # describes an access token held in a refreshable session,
+                    # so it stays eligible.
+                    if "refresh" in lowered_name and "access" not in lowered_name:
+                        continue
+                    if secret_string.startswith("aoa") or "token" in lowered_name:
                         token = secret_string
                         break
         except sqlite3.Error:
@@ -286,7 +293,7 @@ class AuthManager:
 
         if token is None:
             raise AuthenticationError("No token in credential database")
-        return cls(token=token, profile_arn=profile_arn)
+        return cls(token=token, profile_arn=profile_arn, source=source)
 
     @staticmethod
     def _optional_query(
@@ -339,6 +346,11 @@ class AuthManager:
     @property
     def is_authenticated(self) -> bool:
         return self._token is not None
+
+    @property
+    def profile_arn(self) -> Optional[str]:
+        """Return the resolved profile ARN, which is not a secret."""
+        return self._profile_arn
 
     @property
     def source(self) -> str:

@@ -53,7 +53,11 @@ class TrackingEvents:
 
 class FakeAssistantClient(AssistantClient):
     def __init__(self) -> None:
-        self._fake_auth = AuthManager(token="test-token", profile_arn="test-profile")
+        self._fake_auth = AuthManager(
+            token="test-token",
+            profile_arn="test-profile",
+            source="explicit",
+        )
         self.simple_response = "Hello from test"
         self.simple_error: Exception | None = None
         self.list_error: Exception | None = None
@@ -284,7 +288,11 @@ def test_legacy_routes_use_the_injected_client(
 
     token_status = client.get("/api/token/status")
     assert token_status.status_code == 200
-    assert token_status.get_json() == {"authenticated": True, "has_profile": True}
+    assert token_status.get_json() == {
+        "authenticated": True,
+        "has_profile": True,
+        "source": "explicit",
+    }
 
     models = client.get("/v1/models")
     assert models.status_code == 200

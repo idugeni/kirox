@@ -53,7 +53,27 @@ class EventStreamMessage:
         return header.value if header else ""
 
     def body_json(self) -> Any:
-        return json.loads(self.body)
+        """Decode the body as JSON, reporting corruption as a stream failure.
+
+        Upstream payload corruption is an upstream problem, so it must not
+        escape as a bare `json.JSONDecodeError` that callers would classify as
+        an internal error.
+        """
+        try:
+            return json.loads(self.body)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise StreamError(
+                f"EventStream {self.event_type or 'event'} body is not valid JSON"
+            ) from exc
+
+    def body_object(self) -> dict[str, Any]:
+        """Decode the body as a JSON object, rejecting any other JSON shape."""
+        payload = self.body_json()
+        if not isinstance(payload, dict):
+            raise StreamError(
+                f"EventStream {self.event_type or 'event'} body must be a JSON object"
+            )
+        return payload
 
 
 def _require_header_bytes(position: int, size: int, end: int, description: str) -> None:
